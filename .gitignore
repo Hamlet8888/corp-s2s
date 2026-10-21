@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# corp-s2s: keep production data out of version control.
+# Only code, docs and the fictional examples/ data belong in git.
+# ---------------------------------------------------------------------------
+
+# --- Production / real-world data -----------------------------------------
+# Device exports (XML API output and `show config` brace format)
+*.xml
+*.XML
+*.cfg
+*.conf
+*.set
+*.tgz
+# ...but allow fictional fixtures used by tests and demos
+!examples/**/*.xml
+!tests/fixtures/**/*.xml
+
+# Real inventories, generated plans, backups, audit reports
+inventory/
+!inventory/.gitkeep
+private/
+exports/
+backups/
+plans/
+reports/
+out/
+# analysis write-ups of the real estate (real IPs / site names)
+design/
+*.plan.json
+*.audit.json
+*.diff
+
+# --- Secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.kdbx
+secrets.yaml
+secrets.yml
+*apikey*
+*api_key*
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS ----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

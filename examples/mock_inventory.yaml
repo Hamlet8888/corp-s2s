@@ -1,0 +1,289 @@
+# =============================================================================
+# mock_inventory.yaml: FICTIONAL demo topology for corp-s2s
+#
+# Everything in this file is made up. "Example Corp" is not a real company.
+#   * Public IPs come only from RFC 5737 documentation ranges:
+#       192.0.2.0/24 (TEST-NET-1), 198.51.100.0/24 (TEST-NET-2), 203.0.113.0/24 (TEST-NET-3)
+#   * Management hostnames use the reserved example.net domain (RFC 2606).
+#   * LAN supernets are generic RFC 1918 ranges.
+#   * There are no PSKs here. Real PSKs are never stored in inventory files.
+#
+# File layout:
+#   standards  global crypto and naming standards (managed in Panorama in production)
+#   sites      one entry per site: HA pair or single firewall, WAN paths, LANs
+#   links      desired state. Each tunnel pair is defined ONCE; the tool renders both ends.
+#   observed   simulated "running config" for --demo audit, with seeded drift
+# =============================================================================
+
+schema_version: 1
+organization: Example Corp (fictional)
+
+# -----------------------------------------------------------------------------
+# Global standards. In production these profiles live in a Panorama template
+# and are referenced by name; the tool never creates them on firewalls.
+# -----------------------------------------------------------------------------
+standards:
+  panorama_template: Global-VPN-Standards
+  ike_version: ikev2
+  ike_crypto_profile: STD-IKE-AES256-SHA512-DH20
+  ipsec_crypto_profile: STD-IPSEC-AES256-SHA512-DH20
+  tunnel_monitor_profile: Failover
+  route_metrics:
+    primary: 10
+    failover: 12
+  naming:
+    link: "{local}-{remote}"          # e.g. DC-EAST-OFC-AUS
+    failover_suffix: ".Failover"      # e.g. DC-EAST-OFC-AUS.Failover
+  tunnel_ip_pool: 169.254.100.0/22    # /30 per tunnel, allocated deterministically
+  psk_source: env                     # env | prompt | secret-server
+  nat_traversal: false
+  dpd: true
+
+  # Expected parameters of the Panorama-managed profiles, used by the auditor to
+  # detect locally-defined profiles that drifted from the standard.
+  profile_definitions:
+    ike:
+      STD-IKE-AES256-SHA512-DH20:
+        encryption: [aes-256-cbc]
+        hash: [sha512]
+        dh_group: [group20]
+        lifetime: {hours: 8}
+    ipsec:
+      STD-IPSEC-AES256-SHA512-DH20:
+        encryption: [aes-256-cbc]
+        authentication: [sha512]
+        dh_group: group20
+        lifetime: {hours: 1}
+
+# -----------------------------------------------------------------------------
+# Sites
+# -----------------------------------------------------------------------------
+sites:
+
+  DC-EAST:
+    role: datacenter            # datacenter | dr-datacenter | office | cloud-dc | cloud-workspace
+    platform: on-prem
+    location: "East Region colocation (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: DC-EAST-FW-01, mgmt: dc-east-fw-01.example.net}
+      - {hostname: DC-EAST-FW-02, mgmt: dc-east-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/1, public_ip: 192.0.2.10, provider: "Carrier A"}
+      isp2: {interface: ethernet1/2, public_ip: 198.51.100.10, provider: "Carrier B"}
+    lan: [10.10.0.0/16, 172.20.10.0/24]
+    tunnel_unit_range: [100, 199]
+
+  DC-WEST:
+    role: dr-datacenter
+    platform: on-prem
+    location: "West Region colocation (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: DC-WEST-FW-01, mgmt: dc-west-fw-01.example.net}
+      - {hostname: DC-WEST-FW-02, mgmt: dc-west-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/1, public_ip: 192.0.2.20, provider: "Carrier C"}
+      isp2: {interface: ethernet1/6, public_ip: 198.51.100.20, provider: "Carrier D"}
+    lan: [10.20.0.0/16]
+    tunnel_unit_range: [100, 199]
+
+  AZ-CENTRAL:
+    role: cloud-dc
+    platform: azure
+    location: "Azure region (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: AZ-CENTRAL-FW-01, mgmt: az-central-fw-01.example.net}
+      - {hostname: AZ-CENTRAL-FW-02, mgmt: az-central-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S
+    wan:
+      # Cloud firewalls sit behind 1:1 NAT: the interface holds a private IP,
+      # and the public IP is used as the IKE identity.
+      isp1: {interface: ethernet1/1, public_ip: 203.0.113.30, local_ip: 10.30.20.4/24, provider: "Cloud provider"}
+    lan: [10.30.0.0/16, 172.20.30.0/24]
+    tunnel_unit_range: [1, 99]
+
+  OFC-AUS:
+    role: office
+    platform: on-prem
+    location: "Austin office (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: OFC-AUS-FW-01, mgmt: ofc-aus-fw-01.example.net}
+      - {hostname: OFC-AUS-FW-02, mgmt: ofc-aus-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/1, public_ip: 192.0.2.40, provider: "Cable ISP"}
+      isp2: {interface: ethernet1/2, public_ip: 198.51.100.40, provider: "Fiber ISP"}
+    lan: [10.40.0.0/16]
+    tunnel_unit_range: [1, 99]
+
+  OFC-BER:
+    role: office
+    platform: on-prem
+    location: "Berlin office (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: OFC-BER-FW-01, mgmt: ofc-ber-fw-01.example.net}
+      - {hostname: OFC-BER-FW-02, mgmt: ofc-ber-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/1, public_ip: 192.0.2.50, provider: "Carrier E"}
+      isp2: {interface: ethernet1/2, public_ip: 198.51.100.50, provider: "Carrier F"}
+    lan: [10.50.0.0/16]
+    tunnel_unit_range: [1, 99]
+
+  AWS-DC-SGP:
+    role: cloud-dc
+    platform: aws
+    location: "AWS region (fictional)"
+    ha: none                    # single firewall
+    firewalls:
+      - {hostname: AWS-DC-SGP-FW-01, mgmt: aws-dc-sgp-fw-01.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/1, public_ip: 203.0.113.60, provider: "AWS EIP"}
+    lan: [10.60.0.0/16]
+    tunnel_unit_range: [1, 99]
+
+  AWS-WS-OSL:
+    role: cloud-workspace
+    platform: aws
+    location: "AWS region (fictional)"
+    ha: active-passive
+    firewalls:
+      - {hostname: AWS-WS-OSL-FW-01, mgmt: aws-ws-osl-fw-01.example.net}
+      - {hostname: AWS-WS-OSL-FW-02, mgmt: aws-ws-osl-fw-02.example.net}
+    virtual_router: default
+    vpn_zone: S2S-VPN
+    wan:
+      isp1: {interface: ethernet1/2, public_ip: 203.0.113.70, provider: "AWS EIP"}
+    lan: [10.70.0.0/16]
+    tunnel_unit_range: [1, 99]
+
+# -----------------------------------------------------------------------------
+# Links (desired state). One entry per site pair. Each path becomes one IKE
+# gateway + IPsec tunnel + tunnel interface + routes on EACH end.
+#   role: primary | failover
+#   a / b: WAN key on that site (isp1 / isp2)
+# Proxy-IDs default to every LAN on A x every LAN on B; extra_remote_prefixes
+# adds prefixes reachable through the far end (e.g. a shared services range).
+# -----------------------------------------------------------------------------
+links:
+  - {a: DC-EAST, b: DC-WEST,    paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp2}]}
+  - {a: DC-EAST, b: AZ-CENTRAL, paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp1}]}
+  - {a: DC-EAST, b: OFC-AUS,    paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp2}]}
+  - {a: DC-EAST, b: OFC-BER,    paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp2}]}
+  - {a: DC-EAST, b: AWS-DC-SGP, paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp1}]}
+  - {a: DC-EAST, b: AWS-WS-OSL, paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp1}]}
+  - {a: DC-WEST, b: OFC-AUS,    paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp2}]}
+  - {a: DC-WEST, b: AWS-DC-SGP, paths: [{role: primary, a: isp1, b: isp1}]}
+  - {a: AZ-CENTRAL, b: OFC-AUS, paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp1, b: isp2}]}
+  - {a: AZ-CENTRAL, b: OFC-BER, paths: [{role: primary, a: isp1, b: isp1}]}
+  # New link that doesn't exist yet. `plan` should show it as a pure add on both ends.
+  - {a: OFC-AUS, b: AWS-WS-OSL, paths: [{role: primary, a: isp1, b: isp1}, {role: failover, a: isp2, b: isp1}]}
+
+# -----------------------------------------------------------------------------
+# Observed state (DEMO ONLY). This simulates what `import` would read from the
+# devices. It describes the tunnels each firewall currently has, with drift
+# deliberately seeded so `--demo audit` has something to report.
+#
+# Seeded issues (the auditor should find all of them):
+#   D1  OFC-AUS -> DC-EAST .Failover has no IPsec profile, so it falls back to the
+#       PAN-OS default (3DES/SHA1/DH2) and gets a P2 mismatch
+#   D2  DC-WEST <-> AWS-DC-SGP proxy-ID uses the wrong local network (copy-paste)
+#   D3  OFC-BER ISP1 gateway toward AZ-CENTRAL; AZ expects OFC-BER's ISP2 IP (ISP swap)
+#   D4  OFC-AUS HA pair out of sync (FW-02 is missing the DC-WEST tunnels)
+#   D5  AZ-CENTRAL has a local copy of the IPsec profile with DH14, not the standard DH20
+#   D6  The same tunnel /30 is reused on two unrelated links
+#   D7  DC-EAST has a one-sided gateway toward a decommissioned site
+# -----------------------------------------------------------------------------
+observed:
+  local_profiles:
+    # D5: a local copy of the standard profile that shadows the Panorama one.
+    # HA config sync puts it on both members.
+    AZ-CENTRAL-FW-01: &az_local
+      ipsec:
+        STD-IPSEC-AES256-SHA512-DH20: {encryption: [aes-256-cbc], authentication: [sha512], dh_group: group14, lifetime: {hours: 1}}
+    AZ-CENTRAL-FW-02: *az_local
+
+  devices:
+    DC-EAST-FW-01: &dc_east
+      ha_peer: DC-EAST-FW-02
+      tunnels:
+        - {name: DC-EAST-DC-WEST,             interface: tunnel.100, tunnel_ip: 169.254.100.1/30, local_id: 192.0.2.10,    peer_id: 192.0.2.20,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.20.0.0/16], [172.20.10.0/24, 10.20.0.0/16]]}
+        - {name: DC-EAST-DC-WEST.Failover,    interface: tunnel.101, tunnel_ip: 169.254.100.5/30, local_id: 198.51.100.10, peer_id: 198.51.100.20, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.20.0.0/16], [172.20.10.0/24, 10.20.0.0/16]]}
+        - {name: DC-EAST-AZ-CENTRAL,          interface: tunnel.102, tunnel_ip: 169.254.100.9/30, local_id: 192.0.2.10,    peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.30.0.0/16], [10.10.0.0/16, 172.20.30.0/24], [172.20.10.0/24, 10.30.0.0/16], [172.20.10.0/24, 172.20.30.0/24]]}
+        - {name: DC-EAST-AZ-CENTRAL.Failover, interface: tunnel.103, tunnel_ip: null,              local_id: 198.51.100.10, peer_id: 203.0.113.30, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.30.0.0/16], [10.10.0.0/16, 172.20.30.0/24], [172.20.10.0/24, 10.30.0.0/16], [172.20.10.0/24, 172.20.30.0/24]]}
+        - {name: DC-EAST-OFC-AUS,             interface: tunnel.104, tunnel_ip: 169.254.100.17/30, local_id: 192.0.2.10,   peer_id: 192.0.2.40,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.40.0.0/16], [172.20.10.0/24, 10.40.0.0/16]]}
+        - {name: DC-EAST-OFC-AUS.Failover,    interface: tunnel.105, tunnel_ip: 169.254.100.21/30, local_id: 198.51.100.10, peer_id: 198.51.100.40, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.40.0.0/16], [172.20.10.0/24, 10.40.0.0/16]]}
+        - {name: DC-EAST-OFC-BER,             interface: tunnel.106, tunnel_ip: 169.254.100.25/30, local_id: 192.0.2.10,   peer_id: 192.0.2.50,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.50.0.0/16], [172.20.10.0/24, 10.50.0.0/16]]}
+        - {name: DC-EAST-AWS-DC-SGP,          interface: tunnel.108, tunnel_ip: 169.254.100.33/30, local_id: 192.0.2.10,   peer_id: 203.0.113.60,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.60.0.0/16], [172.20.10.0/24, 10.60.0.0/16]]}
+        - {name: DC-EAST-AWS-WS-OSL,          interface: tunnel.110, tunnel_ip: 169.254.100.41/30, local_id: 192.0.2.10,   peer_id: 203.0.113.70,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.70.0.0/16], [172.20.10.0/24, 10.70.0.0/16]]}
+        - {name: DC-EAST-OFC-OLD,             interface: tunnel.190, tunnel_ip: null,              local_id: 192.0.2.10,   peer_id: 192.0.2.99,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.10.0.0/16, 10.99.0.0/16]]}   # D7
+    DC-EAST-FW-02: *dc_east
+
+    DC-WEST-FW-01: &dc_west
+      ha_peer: DC-WEST-FW-02
+      tunnels:
+        - {name: DC-WEST-DC-EAST,             interface: tunnel.100, tunnel_ip: 169.254.100.2/30, local_id: 192.0.2.20,    peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.20.0.0/16, 10.10.0.0/16], [10.20.0.0/16, 172.20.10.0/24]]}
+        - {name: DC-WEST-DC-EAST.Failover,    interface: tunnel.101, tunnel_ip: 169.254.100.6/30, local_id: 198.51.100.20, peer_id: 198.51.100.10, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.20.0.0/16, 10.10.0.0/16], [10.20.0.0/16, 172.20.10.0/24]]}
+        - {name: DC-WEST-OFC-AUS,             interface: tunnel.102, tunnel_ip: 169.254.100.9/30, local_id: 192.0.2.20,    peer_id: 192.0.2.40,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.20.0.0/16, 10.40.0.0/16]]}   # D6 (169.254.100.8/30 also used by DC-EAST<->AZ-CENTRAL)
+        - {name: DC-WEST-OFC-AUS.Failover,    interface: tunnel.103, tunnel_ip: null,             local_id: 198.51.100.20, peer_id: 198.51.100.40, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.20.0.0/16, 10.40.0.0/16]]}
+        - {name: DC-WEST-AWS-DC-SGP,          interface: tunnel.104, tunnel_ip: null,             local_id: 192.0.2.20,    peer_id: 203.0.113.60,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.20.0.0/16, 10.60.0.0/16]]}
+    DC-WEST-FW-02: *dc_west
+
+    AZ-CENTRAL-FW-01: &az
+      ha_peer: AZ-CENTRAL-FW-02
+      tunnels:
+        - {name: AZ-CENTRAL-DC-EAST,          interface: tunnel.1, tunnel_ip: 169.254.100.10/30, local_id: 203.0.113.30, peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.30.0.0/16, 10.10.0.0/16], [172.20.30.0/24, 10.10.0.0/16], [10.30.0.0/16, 172.20.10.0/24], [172.20.30.0/24, 172.20.10.0/24]]}
+        - {name: AZ-CENTRAL-DC-EAST.Failover, interface: tunnel.2, tunnel_ip: null,              local_id: 203.0.113.30, peer_id: 198.51.100.10, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.30.0.0/16, 10.10.0.0/16], [172.20.30.0/24, 10.10.0.0/16], [10.30.0.0/16, 172.20.10.0/24], [172.20.30.0/24, 172.20.10.0/24]]}
+        - {name: AZ-CENTRAL-OFC-AUS,          interface: tunnel.3, tunnel_ip: null,              local_id: 203.0.113.30, peer_id: 192.0.2.40,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.30.0.0/16, 10.40.0.0/16], [172.20.30.0/24, 10.40.0.0/16]]}
+        - {name: AZ-CENTRAL-OFC-AUS.Failover, interface: tunnel.4, tunnel_ip: null,              local_id: 203.0.113.30, peer_id: 198.51.100.40, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.30.0.0/16, 10.40.0.0/16], [172.20.30.0/24, 10.40.0.0/16]]}
+        - {name: AZ-CENTRAL-OFC-BER,          interface: tunnel.5, tunnel_ip: null,              local_id: 203.0.113.30, peer_id: 198.51.100.50, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.30.0.0/16, 10.50.0.0/16], [172.20.30.0/24, 10.50.0.0/16]]}   # D3 (expects BER ISP2)
+    AZ-CENTRAL-FW-02: *az
+
+    OFC-AUS-FW-01:
+      ha_peer: OFC-AUS-FW-02
+      tunnels: &aus_tunnels
+        - {name: OFC-AUS-DC-EAST,             interface: tunnel.1, tunnel_ip: 169.254.100.18/30, local_id: 192.0.2.40,    peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.10.0.0/16], [10.40.0.0/16, 172.20.10.0/24]]}
+        - {name: OFC-AUS-DC-EAST.Failover,    interface: tunnel.2, tunnel_ip: 169.254.100.22/30, local_id: 198.51.100.40, peer_id: 198.51.100.10, ike: STD-IKE-AES256-SHA512-DH20, ipsec: null,                          proxy_ids: [[10.40.0.0/16, 10.10.0.0/16], [10.40.0.0/16, 172.20.10.0/24]]}   # D1
+        - {name: OFC-AUS-AZ-CENTRAL,          interface: tunnel.5, tunnel_ip: null,              local_id: 192.0.2.40,    peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.30.0.0/16], [10.40.0.0/16, 172.20.30.0/24]]}
+        - {name: OFC-AUS-AZ-CENTRAL.Failover, interface: tunnel.6, tunnel_ip: null,              local_id: 198.51.100.40, peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.30.0.0/16], [10.40.0.0/16, 172.20.30.0/24]]}
+        - {name: OFC-AUS-DC-WEST,             interface: tunnel.3, tunnel_ip: 169.254.100.10/30, local_id: 192.0.2.40,    peer_id: 192.0.2.20,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.20.0.0/16]]}
+        - {name: OFC-AUS-DC-WEST.Failover,    interface: tunnel.4, tunnel_ip: null,              local_id: 198.51.100.40, peer_id: 198.51.100.20, ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.20.0.0/16]]}
+    OFC-AUS-FW-02:                                                         # D4: missing DC-WEST tunnels
+      ha_peer: OFC-AUS-FW-01
+      tunnels:
+        - {name: OFC-AUS-DC-EAST,             interface: tunnel.1, tunnel_ip: 169.254.100.18/30, local_id: 192.0.2.40,    peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.10.0.0/16], [10.40.0.0/16, 172.20.10.0/24]]}
+        - {name: OFC-AUS-DC-EAST.Failover,    interface: tunnel.2, tunnel_ip: 169.254.100.22/30, local_id: 198.51.100.40, peer_id: 198.51.100.10, ike: STD-IKE-AES256-SHA512-DH20, ipsec: null,                          proxy_ids: [[10.40.0.0/16, 10.10.0.0/16], [10.40.0.0/16, 172.20.10.0/24]]}
+        - {name: OFC-AUS-AZ-CENTRAL,          interface: tunnel.5, tunnel_ip: null,              local_id: 192.0.2.40,    peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.30.0.0/16], [10.40.0.0/16, 172.20.30.0/24]]}
+        - {name: OFC-AUS-AZ-CENTRAL.Failover, interface: tunnel.6, tunnel_ip: null,              local_id: 198.51.100.40, peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.40.0.0/16, 10.30.0.0/16], [10.40.0.0/16, 172.20.30.0/24]]}
+
+    OFC-BER-FW-01: &ber
+      ha_peer: OFC-BER-FW-02
+      tunnels:
+        - {name: OFC-BER-DC-EAST,             interface: tunnel.1, tunnel_ip: 169.254.100.26/30, local_id: 192.0.2.50,    peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.50.0.0/16, 10.10.0.0/16], [10.50.0.0/16, 172.20.10.0/24]]}
+        - {name: OFC-BER-AZ-CENTRAL,          interface: tunnel.3, tunnel_ip: null,              local_id: 192.0.2.50,    peer_id: 203.0.113.30,  ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.50.0.0/16, 10.30.0.0/16], [10.50.0.0/16, 172.20.30.0/24]]}   # D3
+    OFC-BER-FW-02: *ber
+
+    AWS-DC-SGP-FW-01:
+      ha_peer: null
+      tunnels:
+        - {name: AWS-DC-SGP-DC-EAST,          interface: tunnel.1, tunnel_ip: 169.254.100.34/30, local_id: 203.0.113.60, peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.60.0.0/16, 10.10.0.0/16], [10.60.0.0/16, 172.20.10.0/24]]}
+        - {name: AWS-DC-SGP-DC-WEST,          interface: tunnel.2, tunnel_ip: null,              local_id: 203.0.113.60, peer_id: 192.0.2.20,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.70.0.0/16, 10.20.0.0/16]]}   # D2 (should be 10.60.0.0/16)
+
+    AWS-WS-OSL-FW-01: &osl
+      ha_peer: AWS-WS-OSL-FW-02
+      tunnels:
+        - {name: AWS-WS-OSL-DC-EAST,          interface: tunnel.1, tunnel_ip: 169.254.100.42/30, local_id: 203.0.113.70, peer_id: 192.0.2.10,    ike: STD-IKE-AES256-SHA512-DH20, ipsec: STD-IPSEC-AES256-SHA512-DH20, proxy_ids: [[10.70.0.0/16, 10.10.0.0/16], [10.70.0.0/16, 172.20.10.0/24]]}
+    AWS-WS-OSL-FW-02: *osl

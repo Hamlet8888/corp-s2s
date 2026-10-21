@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "corp-s2s"
+version = "0.1.0"
+description = "Audit, plan and apply PAN-OS site-to-site IPsec tunnels across a multi-site estate"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.25"]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=5.4"]   # optional: core.miniyaml is used when PyYAML is absent
+
+[project.scripts]
+corp-s2s = "core.cli:main"
+
+[tool.setuptools]
+packages = ["core"]
