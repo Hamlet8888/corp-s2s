@@ -803,10 +803,14 @@ class Troubleshooter:
         seen_urls = [e for e in urls if not e.blocked]
         if seen_urls:
             cats = Counter(f"{e.category or '?'} ({e.action or '?'})" for e in seen_urls)
+            last: Dict[str, str] = {}
+            for e in seen_urls:
+                if e.url and e.time and e.time > last.get(e.url, ""):
+                    last[e.url] = e.time
             sample = list(dict.fromkeys(e.url for e in seen_urls if e.url))[:5]
             out.append(Finding("INFO", "LOG_URL_SEEN", f"{len(seen_urls)} URL log entr{'y' if len(seen_urls) == 1 else 'ies'} "
                                f"without a block", [f"{n} x {k}" for k, n in cats.most_common(5)]
-                               + [f"url: {u}" for u in sample]
+                               + [f"url: {u}" + (f"  (last seen {last[u]})" if u in last else "") for u in sample]
                                + ["HTTPS sites are categorised by name only (no decryption): a blocked path like "
                                   "/test-malware is only seen over plain HTTP"], "url"))
 
