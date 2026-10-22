@@ -337,6 +337,15 @@ class TestRemediation(unittest.TestCase):
         self.assertNotIn("ROUTE_PRIVATE_VIA_DEFAULT", codes(Troubleshooter(p).diagnose("10.10.20.15", "198.51.100.9")))
 
 
+class TestLogAbsence(unittest.TestCase):
+    def test_live_query_with_no_results_is_not_reported_as_not_provided(self):
+        d = Troubleshooter(policy(), [], logs_queried=True).diagnose("10.10.20.15", "198.51.100.9", port=443)
+        self.assertIn("LOG_NONE", codes(d))
+        self.assertNotIn("LOG_NOT_PROVIDED", codes(d))
+        d = Troubleshooter(policy(), []).diagnose("10.10.20.15", "198.51.100.9", port=443)
+        self.assertIn("LOG_NOT_PROVIDED", codes(d))
+
+
 class TestUserAndCategory(unittest.TestCase):
     def test_url_category_prediction(self):
         d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",

@@ -245,7 +245,7 @@ def cmd_diagnose(args) -> int:
                 parse_target(value)
             except ValueError:
                 sys.exit(f"invalid address for {label}: {value}")
-    ts = Troubleshooter(policy, logs, live=live)
+    ts = Troubleshooter(policy, logs, live=live, logs_queried=bool(args.host))
     d = ts.diagnose(args.ip, args.peer, port=args.port, proto=args.protocol, app=args.app,
                     direction=args.direction, from_zone=args.from_zone, to_zone=args.to_zone,
                     user=args.user, url_category=args.url_category, max_flows=args.max_flows,

@@ -246,9 +246,11 @@ def _why(dims: List[Dim]) -> List[str]:
 class Troubleshooter:
     """Diagnose reachability for an IP/subnet against one firewall's config and logs."""
 
-    def __init__(self, policy: PolicyConfig, logs: Optional[List[LogEntry]] = None, live=None):
+    def __init__(self, policy: PolicyConfig, logs: Optional[List[LogEntry]] = None, live=None,
+                 logs_queried: bool = False):
         self.p = policy
         self.logs = list(logs or [])
+        self.logs_queried = logs_queried    # True when logs were pulled live (even if none came back)
         self.m = Matcher(policy)
         self.live = live                  # optional troubleshoot.live.LiveVerifier
 
@@ -849,7 +851,7 @@ class Troubleshooter:
     def _log_absence(self, rel: List[LogEntry], traces: List[FlowTrace]) -> List[Finding]:
         if rel:
             return []
-        if not self.logs:
+        if not self.logs and not self.logs_queried:
             return [Finding("INFO", "LOG_NOT_PROVIDED", "No logs were provided; the result is from config only",
                             ["pass --logs FILE (traffic/threat/URL exports) or --host to pull them live"], "logs")]
         details = ["traffic may not be reaching the firewall (upstream routing, another firewall, or a typo in "
@@ -859,6 +861,8 @@ class Troubleshooter:
             if rule is not None and not rule.log_end:
                 details.insert(0, f"the matching rule '{rule.name}' does not log at session end, which alone "
                                   f"explains missing traffic logs")
+        if self.logs_queried and not self.logs:
+            details.insert(0, "the firewall was queried live and returned no matching traffic, threat or URL logs")
         return [Finding("WARNING", "LOG_NONE", "No traffic, threat or URL logs mention this IP", details, "logs")]
 
 
