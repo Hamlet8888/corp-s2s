@@ -1,0 +1,4 @@
+Receive Time,Serial #,Type,Threat/Content Type,Source address,Destination address,Rule,Application,Source Zone,Destination Zone,Inbound Interface,Outbound Interface,Source Port,Destination Port,IP Protocol,Action,URL/Filename,Threat/Content Name,Category,Severity
+2026/10/22 09:20:11,000000000001,THREAT,url,10.10.20.33,198.51.100.77,Users-to-Internet,ssl,trust,untrust,ethernet1/2,ethernet1/1,51515,443,tcp,block-url,casino.example.com/,,gambling,informational
+2026/10/22 09:20:14,000000000001,THREAT,url,10.10.20.33,198.51.100.77,Users-to-Internet,ssl,trust,untrust,ethernet1/2,ethernet1/1,51516,443,tcp,block-url,casino.example.com/play,,gambling,informational
+2026/10/22 09:21:40,000000000001,THREAT,url,10.10.20.33,198.51.100.90,Users-to-Internet,ssl,trust,untrust,ethernet1/2,ethernet1/1,51517,443,tcp,alert,videos.example.org/,,streaming-media,informational

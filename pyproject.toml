@@ -15,6 +15,7 @@ yaml = ["PyYAML>=5.4"]   # optional: core.miniyaml is used when PyYAML is absent
 
 [project.scripts]
 corp-s2s = "core.cli:main"
+pan-troubleshoot = "troubleshoot.cli:main"
 
 [tool.setuptools]
-packages = ["core"]
+packages = ["core", "troubleshoot"]

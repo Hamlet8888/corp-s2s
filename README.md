@@ -156,15 +156,103 @@ apply time from `PSK_<A>_<B>_<ROLE>` environment variables (or a prompt). Both e
 * The parser removes secrets on load. Plan/JSON output and the API journal redact PSKs. Backups keep the device's
   own encrypted secrets so they can be restored, and are owner-only.
 
+## Firewall troubleshooting: `pan-troubleshoot`
+
+A second tool in this repo answers the question every firewall ticket starts with: **why is this IP or subnet
+blocked?** It reads the same exports (or pulls live, read-only), traces the packet the way PAN-OS processes it,
+and backs every conclusion with traffic, threat and URL-filtering logs.
+
+```bash
+python3 fw_troubleshoot.py demo                 # 10 scenarios on fictional data; contacts nothing
+
+# offline: config export + log exports (XML API output or web-UI "Export to CSV")
+python3 fw_troubleshoot.py diagnose --config exports/fw01.xml \
+    --logs exports/traffic.csv --logs exports/threat.csv --logs exports/url.csv \
+    --ip 10.20.1.15 --peer 203.0.113.80 --port 443
+
+# live (read-only): running config incl. Panorama-pushed rules, routing table (BGP/OSPF included),
+# traffic/threat/URL logs, plus the firewall's own test security-policy-match / nat-policy-match / fib-lookup
+python3 fw_troubleshoot.py diagnose --host fw01.example.net --ip 10.20.1.0/24 \
+    --since '2026/10/22 08:00:00' --verify --save reports/
+
+python3 fw_troubleshoot.py matrix --config exports/fw01.xml --src 10.20.1.15 --dst 10.30.0.0/24
+python3 fw_troubleshoot.py audit  --config exports/fw01.xml [--rule NAME] [--conflicts-only]
+```
+
+### `diagnose`: what it checks, in PAN-OS order
+
+| Stage | What can block traffic | Finding codes |
+|---|---|---|
+| Ingress | No route back to the source (can't pick an ingress zone; replies dropped), interface without a zone | `ROUTE_NO_RETURN`, `ZONE_MISSING` |
+| Route (pre-NAT) | No route, discard/blackhole route, a subnet split across paths | `ROUTE_NONE`, `ROUTE_DISCARD`, `ROUTE_SPLIT` |
+| NAT | Private source to the internet without source NAT, DNAT to an unroutable address | `NAT_NO_SOURCE_NAT`, `NAT_DNAT_NO_ROUTE` |
+| Security policy | Explicit deny, no allow rule (`interzone-default`, which doesn't log), disabled rules, near-miss rules, App-ID/User-ID/FQDN/DAG-dependent matches | `POLICY_DENY`, `POLICY_DEFAULT_DENY`, `POLICY_DEPENDS_ON_APP`, `POLICY_DISABLED_RULE` |
+| App-ID vs port | App on a non-standard port; rule whose app and service can't agree | `APP_PORT_CONFLICT`, `APP_NONSTANDARD_PORT` |
+| Traffic logs | Denies per rule, sessions ended by a threat, sessions with no reply, logs that disagree with config (stale export, asymmetric path) | `LOG_DENY`, `LOG_DEFAULT_DENY`, `LOG_SESSION_ENDED_BY_THREAT`, `LOG_NO_REPLY`, `ROUTE_ASYMMETRIC`, `LOG_RULE_MISMATCH` |
+| Threat logs | Signature blocked by the AV / anti-spyware / vulnerability / file-blocking / WildFire profile **on that rule** (with the exception to add if it's a false positive); zone protection | `LOG_THREAT_BLOCK`, `LOG_ZONE_PROTECTION` |
+| URL logs | Category blocked by the rule's URL-filtering profile (confirmed against the profile's action) | `LOG_URL_BLOCK` |
+| Live `--verify` | Firewall's own lookup disagrees with the export | `LIVE_POLICY_MISMATCH`, `LIVE_NAT_MISMATCH`, `LIVE_ROUTE_MISMATCH` |
+
+Security policy is matched with **pre-NAT addresses and the post-NAT destination zone**, as PAN-OS does. Anything
+config alone can't decide (App-ID, User-ID, FQDN objects, dynamic address groups, EDLs, URL categories) is
+reported as *conditional* rather than guessed; the App-ID is taken from matching traffic logs when available
+(or `--app`). With only `--ip` and no `--peer`, the most frequent blocked flows in the logs are traced.
+
+The verdict is `BLOCKED` (with the reasons), `ALLOWED`, `DEPENDS ON APP-ID/USER-ID` or `INCONCLUSIVE`. Exit
+codes: 2 = blocked/error, 1 = warnings, 0 = clean.
+
+### `matrix`: port & application auto-discovery
+
+Given a source and destination, every security rule that can match between them (after resolving zones through
+routing and NAT) is flattened into **PERMITTED** and **BLOCKED** application × port/service rows, in evaluation
+order. Rows an earlier rule already takes are listed as *never reached*, conflicts are flagged inline, and the
+default-rule fallback is shown last. Both directions by default (`--one-way` for one).
+
+### App-ID vs service-port conflict inspector
+
+A rule like *application `web-browsing`, service `tcp/22`* matches the first packets on port 22; App-ID then
+identifies the real app (`ssh`), the policy is re-evaluated and the session is dropped mid-handshake
+(`policy-deny`), while real web traffic on port 80 never matches the rule at all. The inspector compares every
+named application's App-ID default ports with the rule's explicit services (`HIGH` when nothing fits, `MEDIUM`
+when only some apps fit). It runs in `audit`, `matrix` and `diagnose`. Known benign cases (decrypted HTTPS seen
+as `web-browsing` on 443) are tolerated; the default-port table lives in `troubleshoot/objects.py`.
+
+### `audit`: best-practice recommendations
+
+Rule by rule, with a recommendation for each item:
+
+| Severity | Checks |
+|---|---|
+| HIGH | any app on any port; any source *and* destination on internet rules; allow rule without security profiles; App-ID/port conflict; internet-facing zone without zone protection |
+| MEDIUM | apps on `service any` (use `application-default`); port-based rules (`application any`); zone `any`; incomplete profile groups (AV, anti-spyware, vulnerability, file blocking, WildFire, URL filtering for internet-bound); TLS rules not covered by SSL decryption; no session-end logging; shadowed rules; `interzone-default` not logging; no decryption policy |
+| LOW | disabled rules, no description, no log forwarding profile, `deny` instead of `drop` for inbound internet, interfaces with an IP but no zone |
+
+### Modules
+
+| Module | Responsibility |
+|---|---|
+| `troubleshoot/objects.py` | Address/service/application resolution as IP intervals: full, partial, unknown or no match |
+| `troubleshoot/policy.py` | Zones, security/NAT/decryption rules (Panorama pre/post + local + default rules), profile groups, URL profiles |
+| `troubleshoot/routing.py` | Longest-prefix match over connected + static routes (virtual and logical routers) or the live table; next-vr, discard |
+| `troubleshoot/logs.py` | Traffic/threat/URL logs from XML API queries, saved XML or CSV exports |
+| `troubleshoot/engine.py` | Flow simulation and log correlation |
+| `troubleshoot/advisor.py` | Matrix, conflict inspector, best-practice audit |
+| `troubleshoot/live.py` | Read-only live pulls and `test ...-match` cross-checks |
+
+Live mode uses `core/api.py` (POST only, key in a header, never logged, TLS verified), only issues reads, and
+saved data (`--save`) is written owner-only. Keep it in a git-ignored folder such as `reports/`.
+
 ## Tests
 
 ```bash
 python3 -m unittest discover -s tests -t .
 ```
 
-44 offline tests: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
+77 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
 redaction), the seven demo drift scenarios, planner symmetry, allocation and idempotency, brace parsing, and
-CLI gates, including a run that fails if anything touches the network.
+CLI gates, including a run that fails if anything touches the network. For pan-troubleshoot: every demo
+scenario, object/route resolution, CSV/XML log parsing, the matrix, conflicts, audit, live verification against a
+fake API and brace-format configs.
 
 ## Status / roadmap
 

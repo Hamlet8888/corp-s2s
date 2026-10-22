@@ -428,6 +428,37 @@ class PanosApiClient:
         log.info("%s: backup written to %s (%d bytes)", self.host, path, len(body))
         return path
 
+    # -- logs (read-only) -------------------------------------------------------
+    def query_logs(self, log_type: str, query: str = "", nlogs: int = 500,
+                   timeout: float = 120, poll: float = 2) -> List[ET.Element]:
+        """Run an asynchronous log query (``type=log``) and return the ``<entry>`` elements.
+
+        *log_type* is ``traffic``, ``threat``, ``url``, ``wildfire``, ``data``, ...
+        *query* uses the Monitor-tab filter syntax, e.g. ``( addr in 10.1.1.0/24 )``.
+        """
+        if not re.match(r"^[a-z\-]+$", log_type):
+            raise PanosSafetyError(f"invalid log type: {log_type!r}")
+        params = {"type": "log", "log-type": log_type, "nlogs": str(max(1, min(int(nlogs), 5000)))}
+        if query:
+            params["query"] = query
+        root = self._request(params)
+        job_id = (root.findtext("result/job") or "").strip()
+        if not job_id:
+            raise PanosResponseError(f"{self.host}: log query returned no job id", host=self.host)
+        deadline = time.monotonic() + timeout
+        while True:
+            res = self._request({"type": "log", "action": "get", "job-id": job_id})
+            if (res.findtext("result/job/status") or "").strip() == "FIN":
+                return res.findall("result/log/logs/entry")
+            if time.monotonic() >= deadline:
+                try:
+                    self._request({"type": "log", "action": "finish", "job-id": job_id})
+                except PanosApiError:
+                    pass
+                raise PanosTimeoutError(f"{self.host}: {log_type} log query {job_id} did not finish "
+                                        f"within {timeout}s", host=self.host)
+            time.sleep(poll)
+
     # -- VPN verification (read-only) -------------------------------------------
     def ike_sa(self, gateway: str) -> ET.Element:
         return self.op(f"<show><vpn><ike-sa><gateway>{_xml_text(gateway)}</gateway></ike-sa></vpn></show>")
