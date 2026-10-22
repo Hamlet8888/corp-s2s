@@ -24,7 +24,7 @@ from .objects import first_ip
 from .policy import PolicyConfig, policy_from_root
 from .routing import routes_from_live
 
-_SAFE = re.compile(r"^[A-Za-z0-9_.:/\- ]+$")
+_SAFE = re.compile(r"^[A-Za-z0-9_.:/\\@=,\- ]+$")
 
 
 def _v(value: str) -> str:
@@ -52,7 +52,7 @@ def pull_routes(client: PanosApiClient, policy: PolicyConfig) -> Optional[ET.Ele
             root = client.op(cmd)
         except PanosApiError:
             continue
-        table = routes_from_live(root, policy.routes.vr_interfaces)
+        table = routes_from_live(root, policy.routes.vr_interfaces, policy.routes.logical)
         if table.routes:
             policy.routes = table
             return root
@@ -87,10 +87,15 @@ class LiveVerifier:
                 q += f"<protocol>{proto}</protocol>"
             if f.dport is not None:
                 q += f"<destination-port>{int(f.dport)}</destination-port>"
+            sq = q
             if f.app:
-                q += f"<application>{_v(f.app)}</application>"
+                sq += f"<application>{_v(f.app)}</application>"
+            if f.user:
+                sq += f"<source-user>{_v(f.user)}</source-user>"
+            if f.url_category:
+                sq += f"<category>{_v(f.url_category)}</category>"
             try:
-                rules = _rule_names(self.c.op(f"<test><security-policy-match>{q}</security-policy-match></test>"))
+                rules = _rule_names(self.c.op(f"<test><security-policy-match>{sq}</security-policy-match></test>"))
                 live_rule = rules[0] if rules else None
                 if live_rule and live_rule != t.security_rule:
                     out.append(Finding("WARNING", "LIVE_POLICY_MISMATCH",
@@ -103,7 +108,7 @@ class LiveVerifier:
             except (PanosApiError, ValueError) as exc:
                 t.step("live", "warn", f"security-policy-match failed: {exc}")
             if proto:
-                nq = q.replace(f"<application>{_v(f.app)}</application>", "") if f.app else q
+                nq = q.replace(f"<to>{_v(t.to_zone)}</to>", f"<to>{_v(t.pre_nat_zone or t.to_zone)}</to>")
                 try:
                     rules = _rule_names(self.c.op(f"<test><nat-policy-match>{nq}</nat-policy-match></test>"))
                     live_nat = rules[0] if rules else None

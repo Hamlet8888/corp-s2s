@@ -66,6 +66,7 @@ class RouteTable:
     routes: Dict[str, List[Route]] = field(default_factory=dict)          # vr -> routes
     vr_interfaces: Dict[str, List[str]] = field(default_factory=dict)     # vr -> interfaces
     live: bool = False
+    logical: Dict[str, tuple] = field(default_factory=dict)               # name -> (logical-router, vrf)
 
     def add(self, route: Route) -> None:
         self.routes.setdefault(route.vr, []).append(route)
@@ -184,15 +185,16 @@ def routes_from_config(net: ET.Element, vrs, interfaces, store=None) -> RouteTab
         for vrf in _entries(lr, "vrf"):
             name = lr.get("name", "") if vrf.get("name") == "default" else f"{lr.get('name')}/{vrf.get('name')}"
             table.vr_interfaces[name] = _members(vrf, "interface")
+            table.logical[name] = (lr.get("name", ""), vrf.get("name", ""))
             _static(table, name, _entries(vrf, "routing-table/ip/static-route"), store)
     for vr in list(table.vr_interfaces):
         _connected(table, vr, interfaces, store)
     return table
 
 
-def routes_from_live(root: ET.Element, vr_interfaces: Dict[str, List[str]]) -> RouteTable:
+def routes_from_live(root: ET.Element, vr_interfaces: Dict[str, List[str]], logical=None) -> RouteTable:
     """Parse ``<show><routing><route/></routing></show>`` output (active routes only)."""
-    table = RouteTable(vr_interfaces=dict(vr_interfaces), live=True)
+    table = RouteTable(vr_interfaces=dict(vr_interfaces), live=True, logical=dict(logical or {}))
     for e in root.iter("entry"):
         dest = (e.findtext("destination") or "").strip()
         flags = (e.findtext("flags") or "").split()

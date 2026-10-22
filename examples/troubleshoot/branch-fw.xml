@@ -16,6 +16,8 @@
             <entry name="ethernet1/4"><layer3><ip><entry name="10.10.50.1/24"/></ip></layer3><comment>DMZ</comment></entry>
             <entry name="ethernet1/5"><layer3><ip><entry name="10.10.30.1/24"/></ip></layer3><comment>IoT</comment></entry>
             <entry name="ethernet1/6"><layer3><ip><entry name="10.10.60.1/24"/></ip></layer3><comment>Lab (zone never assigned)</comment></entry>
+            <entry name="ethernet1/7"><layer3><ip><entry name="10.10.70.1/24"/></ip></layer3><comment>Guest Wi-Fi</comment></entry>
+            <entry name="ethernet1/8"><layer3><ip><entry name="10.255.0.1/30"/></ip></layer3><comment>WAN router</comment></entry>
           </ethernet>
         </interface>
         <profiles>
@@ -26,6 +28,7 @@
             <interface>
               <member>ethernet1/1</member><member>ethernet1/2</member><member>ethernet1/3</member>
               <member>ethernet1/4</member><member>ethernet1/5</member><member>ethernet1/6</member>
+              <member>ethernet1/7</member><member>ethernet1/8</member>
             </interface>
             <routing-table>
               <ip>
@@ -55,6 +58,8 @@
             <entry name="servers"><network><layer3><member>ethernet1/3</member></layer3></network></entry>
             <entry name="dmz"><network><layer3><member>ethernet1/4</member></layer3></network></entry>
             <entry name="iot"><network><layer3><member>ethernet1/5</member></layer3></network></entry>
+            <entry name="guest"><network><layer3><member>ethernet1/7</member></layer3></network></entry>
+            <entry name="wan"><network><layer3><member>ethernet1/8</member></layer3></network></entry>
           </zone>
           <address>
             <entry name="N-Users"><ip-netmask>10.10.20.0/24</ip-netmask></entry>

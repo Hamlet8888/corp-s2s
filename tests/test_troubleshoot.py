@@ -16,6 +16,8 @@ from troubleshoot.live import LiveVerifier
 from troubleshoot.logs import LogEntry, build_query, load_logs, parse_csv
 from troubleshoot.objects import FULL, NONE, PARTIAL, UNKNOWN, ObjectStore, coverage, parse_target
 from troubleshoot.policy import load_policy
+from troubleshoot.remediate import Hints
+from troubleshoot.report import render_html
 
 DEMO = Path(__file__).resolve().parent.parent / "examples" / "troubleshoot"
 CFG = DEMO / "branch-fw.xml"
@@ -223,6 +225,143 @@ class FakeResp:
         self.content, self.status_code = body.encode(), 200
 
 
+def plan_for(*args, logs_=None, **kw):
+    d = Troubleshooter(policy(), logs_ or []).diagnose(*args, **kw)
+    return d, d.plans[0]
+
+
+def recommended(plan):
+    return [s for s in plan.steps if not s.alternative]
+
+
+class TestRemediation(unittest.TestCase):
+    def test_add_application_to_existing_rule(self):
+        _, plan = plan_for("10.10.20.15", "10.10.40.22", port=22, app="ssh")
+        first = recommended(plan)[0]
+        self.assertIn("Extend existing rule 'Admins-to-Jumphost'", first.title)
+        self.assertIn("set rulebase security rules Admins-to-Jumphost application ssh", first.commands)
+        self.assertIn("delete rulebase security rules Admins-to-Jumphost application web-browsing", first.commands)
+        self.assertTrue(any(s.alternative for s in plan.steps))          # dedicated rule offered too
+
+    def test_enable_disabled_rule(self):
+        _, plan = plan_for("10.10.30.0/24", "10.10.40.10", port=1433)
+        self.assertEqual(recommended(plan)[0].commands, ["set rulebase security rules IoT-to-SQL disabled no"])
+
+    def test_nat_and_security_missing(self):
+        _, plan = plan_for("10.10.70.25", "198.51.100.40", port=443, app="ssl")
+        self.assertEqual(plan.needed, ["NAT rule", "security rule"])
+        nat = recommended(plan)[0]
+        self.assertEqual(nat.commands, ["set rulebase nat rules SNAT-Outbound from guest"])
+        sec = recommended(plan)[1]
+        self.assertTrue(any("from guest to untrust" in c and "application ssl service application-default" in c
+                            for c in sec.commands))
+
+    def test_route_and_security_missing_with_next_hop(self):
+        _, plan = plan_for("10.10.20.15", "172.20.5.10", port=443, app="ssl",
+                           hints=Hints(next_hop="10.255.0.2"))
+        self.assertEqual(plan.needed, ["route", "security rule"])
+        self.assertIn("interface ethernet1/8 nexthop ip-address 10.255.0.2", plan.steps[0].commands[0])
+        self.assertTrue(any("from trust to wan" in c for c in recommended(plan)[1].commands))
+        # an internet rule with destination any is never widened to a new zone
+        self.assertFalse(any("Users-to-Internet" in s.title for s in plan.steps))
+
+    def test_route_without_next_hop_uses_placeholders(self):
+        _, plan = plan_for("10.10.20.15", "172.31.5.5", port=22)
+        self.assertIn("<next-hop-ip>", plan.steps[0].commands[0])
+        self.assertTrue(any("--next-hop" in n for n in plan.steps[0].notes))
+
+    def test_zone_nat_security_missing(self):
+        _, plan = plan_for("10.10.60.5", "198.51.100.40", port=443, app="ssl")
+        self.assertEqual(plan.needed, ["zone", "NAT rule", "security rule"])
+        self.assertEqual(plan.steps[0].commands, ["set zone lab network layer3 ethernet1/6"])
+
+    def test_dnat_plan(self):
+        d, plan = plan_for("203.0.113.2", "192.0.2.150", port=8443, app="ssl", direction="in",
+                           hints=Hints(dnat_to="10.10.50.20"))
+        self.assertEqual(d.verdict, "TERMINATES ON THE FIREWALL")
+        self.assertEqual(plan.needed, ["NAT rule", "security rule"])
+        self.assertIn("translated-address H-10.10.50.20", plan.steps[0].commands[-1])
+        sec = recommended(plan)[1].commands[-2]
+        self.assertIn("from untrust to dmz", sec)                          # post-NAT zone
+        self.assertIn("destination H-203.0.113.2", sec)                    # pre-NAT address
+
+    def test_explicit_deny_prefers_group_removal(self):
+        _, plan = plan_for("10.10.20.66", "198.51.100.25", port=443)
+        self.assertEqual(recommended(plan)[0].commands,
+                         ["delete address-group AG-Quarantine static H-Quarantine-PC66"])
+        alt = next(s for s in plan.steps if s.alternative)
+        self.assertIn("move rulebase security rules Allow-trust-to-untrust-tcp-443 before Block-Quarantine",
+                      alt.commands)
+
+    def test_port_based_rule_is_not_the_recommendation(self):
+        _, plan = plan_for("10.10.20.15", "10.10.40.22", port=3389, app="ms-rdp")
+        self.assertIn("Create a dedicated allow rule", recommended(plan)[0].title)
+        self.assertIn("Users-to-Servers-HTTPS", next(s for s in plan.steps if s.alternative).title)
+
+    def test_threat_exception_and_url_allow_list(self):
+        _, plan = plan_for("10.10.20.15", "192.0.2.80", port=443, logs_=logs())
+        self.assertIn("set profiles vulnerability VP-Strict threat-exception 91991 action allow",
+                      plan.steps[0].commands)
+        self.assertIn("set profiles vulnerability VP-Strict threat-exception 91991 exempt-ip 192.0.2.80",
+                      plan.steps[0].commands)
+        _, plan = plan_for("10.10.20.33", "198.51.100.77", port=443, logs_=logs())
+        self.assertIn("set profiles custom-url-category Troubleshoot-Allow list casino.example.com",
+                      plan.steps[0].commands)
+
+    def test_allowed_flow_needs_nothing(self):
+        _, plan = plan_for("192.0.2.150", "203.0.113.10", port=443, app="ssl")
+        self.assertEqual(plan.needed, [])
+        self.assertTrue(plan.summary.startswith("Nothing to change"))
+
+    def test_multi_vsys_prefix(self):
+        p = policy()
+        p.vsys = "vsys2"
+        d = Troubleshooter(p).diagnose("10.10.70.25", "198.51.100.40", port=443, app="ssl")
+        self.assertTrue(d.plans[0].steps[0].commands[0].startswith("set vsys vsys2 rulebase nat"))
+
+
+class TestUserAndCategory(unittest.TestCase):
+    def test_url_category_prediction(self):
+        d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",
+                                              url_category="gambling")
+        self.assertIn("PROFILE_URL_BLOCK", codes(d))
+        self.assertEqual(d.verdict, "BLOCKED")
+        d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",
+                                              url_category="news")
+        self.assertNotIn("PROFILE_URL_BLOCK", codes(d))
+
+    def test_source_user(self):
+        p = policy()
+        r = p.rule("Users-to-Servers-HTTPS")
+        r.source_user = ["corp\\alice"]
+        t = Troubleshooter(p)
+        self.assertEqual(t.diagnose("10.10.20.15", "10.10.40.9", port=443, user="corp\\alice").traces[0].security_rule,
+                         "Users-to-Servers-HTTPS")
+        self.assertEqual(t.diagnose("10.10.20.15", "10.10.40.9", port=443, user="corp\\bob").traces[0].security_rule,
+                         "interzone-default")
+
+
+class TestCommandsAndReport(unittest.TestCase):
+    def test_verification_commands(self):
+        d = Troubleshooter(policy()).diagnose("192.0.2.150", "203.0.113.10", port=443, app="ssl")
+        cmds = [c for _, group in d.commands[0].groups for c in group]
+        self.assertIn("test security-policy-match from untrust to dmz source 192.0.2.150 destination 203.0.113.10 "
+                      "protocol 6 destination-port 443 application ssl show-all yes", cmds)
+        # NAT is matched with the pre-NAT zone
+        self.assertIn("test nat-policy-match from untrust to untrust source 192.0.2.150 destination 203.0.113.10 "
+                      "protocol 6 destination-port 443", cmds)
+        self.assertIn("test routing fib-lookup virtual-router default ip 10.10.50.10", cmds)
+        self.assertIn("debug dataplane packet-diag set filter off", cmds)
+
+    def test_html_report_escapes(self):
+        d = Troubleshooter(policy(), logs()).diagnose("10.10.20.66", "198.51.100.25", port=443)
+        d.findings[0].message = "<script>alert(1)</script>"
+        html = render_html(d, policy())
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertIn("delete address-group AG-Quarantine static H-Quarantine-PC66", html)
+
+
 class TestLive(unittest.TestCase):
     def test_query_logs_polls_job(self):
         bodies = ['<response status="success"><result><job>7</job></result></response>',
@@ -268,7 +407,8 @@ class TestCli(unittest.TestCase):
         with mock.patch("requests.Session.post", side_effect=AssertionError("network used")):
             rc, out, _ = run("demo", "--color", "never")
         self.assertEqual(rc, 0)
-        self.assertIn("10/10 Best-practice audit", out)
+        self.assertIn("14/14 Best-practice audit", out)
+        self.assertIn("To make this flow work: zone + NAT rule + security rule", out)
         self.assertIn("VERDICT: BLOCKED", out)
 
     def test_diagnose_json_and_exit_code(self):
@@ -277,7 +417,14 @@ class TestCli(unittest.TestCase):
             args += ["--logs", str(f)]
         rc, out, _ = run(*args, "--json")
         self.assertEqual(rc, 2)
-        self.assertEqual(json.loads(out)["verdict"], "BLOCKED")
+        data = json.loads(out)
+        self.assertEqual(data["verdict"], "BLOCKED")
+        self.assertTrue(data["fix_plans"][0]["steps"])
+        self.assertTrue(data["verification_commands"][0]["groups"])
+        with tempfile.TemporaryDirectory() as d:
+            rc, _, err = run(*args, "--html", f"{d}/r.html", "--next-hop", "10.255.0.2")
+            self.assertIn("HTML report written", err)
+            self.assertTrue(Path(d, "r.html").read_text().startswith("<!doctype html>"))
 
     def test_matrix_and_audit_commands(self):
         rc, out, _ = run("matrix", "--config", str(CFG), "--src", "10.10.20.15", "--dst", "10.10.40.22", "--one-way")

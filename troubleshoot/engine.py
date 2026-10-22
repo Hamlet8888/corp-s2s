@@ -51,6 +51,7 @@ class Finding:
     message: str
     details: List[str] = field(default_factory=list)
     category: str = "policy"          # routing | zone | nat | policy | profile | threat | url | logs | live
+    data: Dict[str, object] = field(default_factory=dict)   # structured facts for the fix planner
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -67,11 +68,14 @@ class Flow:
     to_zone: Optional[str] = None
     origin: str = "query"             # query | logs
     hits: int = 0
+    user: Optional[str] = None
+    url_category: Optional[str] = None
 
     def __str__(self) -> str:
         port = f":{self.dport}" if self.dport is not None else ""
         return (f"{interval_str(self.src)} -> {interval_str(self.dst)}{port}/{self.proto or 'any'}"
-                + (f" app={self.app}" if self.app else ""))
+                + (f" app={self.app}" if self.app else "") + (f" user={self.user}" if self.user else "")
+                + (f" url-category={self.url_category}" if self.url_category else ""))
 
 
 @dataclass
@@ -92,7 +96,9 @@ class FlowTrace:
     from_zone: Optional[str] = None
     egress_if: Optional[str] = None
     to_zone: Optional[str] = None
+    pre_nat_zone: Optional[str] = None
     nat_rule: Optional[str] = None
+    nat_src: Optional[str] = None
     post_nat_dst: Optional[str] = None
     security_rule: Optional[str] = None
     conditional_rules: List[str] = field(default_factory=list)
@@ -116,11 +122,15 @@ class Diagnosis:
     traces: List[FlowTrace] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
     log_counts: Dict[str, int] = field(default_factory=dict)
+    plans: list = field(default_factory=list)          # troubleshoot.remediate.FixPlan, one per trace
+    commands: list = field(default_factory=list)       # troubleshoot.commands.CommandSet, one per trace
 
     def to_dict(self) -> dict:
         return {"hostname": self.hostname, "target": self.target, "peer": self.peer, "verdict": self.verdict,
                 "reasons": self.reasons, "log_counts": self.log_counts,
-                "traces": [t.to_dict() for t in self.traces], "findings": [f.to_dict() for f in self.findings]}
+                "traces": [t.to_dict() for t in self.traces], "findings": [f.to_dict() for f in self.findings],
+                "fix_plans": [p.to_dict() for p in self.plans],
+                "verification_commands": [c.to_dict() for c in self.commands]}
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +186,7 @@ class Matcher:
         dims.append(_addr_dim("source", self.store, rule.source, rule.negate_source, flow.src))
         dims.append(_addr_dim("destination", self.store, rule.destination, rule.negate_destination, flow.dst))
         if "any" not in rule.source_user:
-            dims.append(("user", UNKNOWN, f"source-user must be {', '.join(rule.source_user)} (User-ID)"))
+            dims.append(_user_dim(rule.source_user, flow.user))
         ar = self.store.app_relation(rule.application, flow.app)
         dims.append(("application", ar,
                      f"application {flow.app or '(unknown)'} vs [{', '.join(rule.application)}]"
@@ -188,7 +198,15 @@ class Matcher:
                      else f"service [{', '.join(rule.service)}] vs {port}"
                      + (" (application-default ports depend on App-ID)" if sset.app_default else "")))
         if "any" not in rule.category:
-            dims.append(("url-category", UNKNOWN, f"URL category must be {', '.join(rule.category)}"))
+            if flow.url_category is None:
+                dims.append(("url-category", UNKNOWN, f"URL category must be {', '.join(rule.category)}"))
+            elif flow.url_category in rule.category:
+                dims.append(("url-category", FULL, ""))
+            else:
+                custom = [c for c in rule.category if c in self.p.custom_url_categories]
+                dims.append(("url-category", UNKNOWN if custom else NONE,
+                             f"URL category {flow.url_category} not in [{', '.join(rule.category)}]"
+                             + (" (unless the URL is in custom category " + ", ".join(custom) + ")" if custom else "")))
         return dims
 
     def nat(self, rule: NatRule, flow: Flow, fz: Optional[str], tz: Optional[str], egress_if: Optional[str]) -> List[Dim]:
@@ -202,6 +220,19 @@ class Matcher:
             sr = self.store.resolve_services([rule.service]).relation(flow.proto, flow.dport)
             dims.append(("service", sr, f"service {flow.proto}/{flow.dport} vs {rule.service}"))
         return dims
+
+
+def _user_dim(members: List[str], user: Optional[str]) -> Dim:
+    need = f"source-user must be {', '.join(members)}"
+    if user is None:
+        return ("user", UNKNOWN, need + " (User-ID)")
+    low = {m.lower() for m in members}
+    if user.lower() in low or ("known-user" in low and user.lower() != "unknown"):
+        return ("user", FULL, "")
+    groups = [m for m in members if m.lower().startswith("cn=") or "," in m]
+    if groups:
+        return ("user", UNKNOWN, need + f"; group membership of {user} can't be checked offline")
+    return ("user", NONE, f"user {user} not in [{', '.join(members)}]")
 
 
 def _why(dims: List[Dim]) -> List[str]:
@@ -225,7 +256,8 @@ class Troubleshooter:
     def diagnose(self, target: str, peer: Optional[str] = None, *, port: Optional[int] = None,
                  proto: Optional[str] = None, app: Optional[str] = None, direction: str = "out",
                  from_zone: Optional[str] = None, to_zone: Optional[str] = None,
-                 max_flows: int = 5) -> Diagnosis:
+                 user: Optional[str] = None, url_category: Optional[str] = None,
+                 max_flows: int = 5, hints=None) -> Diagnosis:
         """*target* is the IP/subnet in question; *peer* the other end. ``direction='out'`` means target
         is the source (target -> peer); ``'in'`` means peer -> target."""
         tiv = parse_target(target)
@@ -242,7 +274,7 @@ class Troubleshooter:
         flows: List[Flow] = []
         if piv is not None:
             src, dst = (tiv, piv) if direction == "out" else (piv, tiv)
-            flows.append(Flow(src, dst, proto, port, app, from_zone, to_zone))
+            flows.append(Flow(src, dst, proto, port, app, from_zone, to_zone, user=user, url_category=url_category))
         for key, n in top_flows(rel, limit=max_flows):
             s, d = try_target(key.src), try_target(key.dst)
             if s is None or d is None or (port is not None and key.dport != port):
@@ -255,6 +287,7 @@ class Troubleshooter:
 
         if not flows:
             findings += self._target_overview(tiv)
+        per_flow: List[List[Finding]] = []
         for flow in flows:
             inferred = None if flow.app else _app_from_logs(flow, rel)
             if inferred:
@@ -267,11 +300,19 @@ class Troubleshooter:
             findings += self._compare_with_logs(trace, rel)
             if self.live is not None:
                 findings += self.live.verify(trace)
-        findings += self._log_findings(rel, tiv)
+            per_flow.append(fnd)
+        log_fnd = self._log_findings(rel, tiv)
+        findings += log_fnd
         findings += self._log_absence(rel, diag.traces)
 
         diag.findings = _dedupe(findings)
         diag.verdict, diag.reasons = _verdict(diag)
+
+        from .commands import verification_commands
+        from .remediate import plan_fixes
+        for trace, fnd in zip(diag.traces, per_flow):
+            diag.plans.append(plan_fixes(self.p, trace, fnd + log_fnd, hints))
+            diag.commands.append(verification_commands(self.p, trace, rel))
         return diag
 
     # -- simulation ------------------------------------------------------------
@@ -285,7 +326,8 @@ class Troubleshooter:
         if flow.from_zone:
             t.from_zone = flow.from_zone
             zone = p.zones.get(flow.from_zone)
-            t.vr = next((rt.vr_of(i) for i in (zone.interfaces if zone else []) if rt.vr_of(i)), None)
+            t.vr = (next((rt.vr_of(i) for i in (zone.interfaces if zone else []) if rt.vr_of(i)), None)
+                    or rt.ingress_vr(flow.src) or (rt.vrs[0] if len(rt.vrs) == 1 else None))
             t.step("ingress", "info", f"zone {flow.from_zone} (given)")
         else:
             t.vr = rt.ingress_vr(flow.src)
@@ -325,7 +367,7 @@ class Troubleshooter:
             out.append(_no_zone(fwd.interface, fs))
             t.verdict, t.reason = "DROP", f"egress interface {fwd.interface} has no zone"
             return t, out
-        pre_nat_zone = t.to_zone
+        pre_nat_zone = t.pre_nat_zone = t.to_zone
 
         # 3. NAT policy (pre-NAT zones, original addresses)
         nat, nat_cond, nat_disabled = None, [], []
@@ -343,7 +385,11 @@ class Troubleshooter:
             nat_cond.append((r, _why(dims)))
         if nat is not None:
             t.nat_rule = nat.name
-            t.step("nat", "ok", f"rule {nat.label}: {nat.describe()}")
+            t.nat_src = self._snat_address(nat)
+            t.step("nat", "ok", f"rule {nat.label}: {nat.describe()}"
+                   + (f"  => source becomes {t.nat_src}" if t.nat_src else "")
+                   + (f"  => destination becomes {nat.dst_address}" + (f":{nat.dst_port}" if nat.dst_port else "")
+                      if nat.dst_address else ""))
         else:
             t.step("nat", "info", "no NAT rule matches (traffic is not translated)")
         for r, why in nat_cond:
@@ -353,7 +399,19 @@ class Troubleshooter:
                                f"Private source {interval_str(flow.src)} goes to public {interval_str(flow.dst)} "
                                f"({t.from_zone} -> {pre_nat_zone}) with no source NAT; replies cannot come back",
                                [f"flow {fs}"] + [f"disabled NAT rule {r.label} would match" for r in nat_disabled]
-                               + ["add a source NAT rule (dynamic-ip-and-port) for this zone pair"], "nat"))
+                               + ["add a source NAT rule (dynamic-ip-and-port) for this zone pair"], "nat",
+                               data={"disabled_nat": [r.name for r in nat_disabled]}))
+
+        own = [i.name for i in p.interfaces if flow.dst[1] == flow.dst[2]
+               and any(ip.split("/")[0] == interval_str(flow.dst) for ip in i.ips)]
+        if own and not (nat is not None and (nat.dst_address or nat.dst_dynamic)):
+            t.step("nat", "warn", f"{interval_str(flow.dst)} is the firewall's own address ({own[0]}) and no "
+                                  f"destination NAT applies: the traffic terminates on the firewall")
+            out.append(Finding("WARNING", "DST_IS_FIREWALL",
+                               f"{interval_str(flow.dst)} is the firewall's own interface address ({own[0]}); without a "
+                               f"destination NAT rule this traffic goes to the firewall itself, not to a server",
+                               [f"flow {fs}", "to publish a server behind it, add destination NAT (--dnat-to IP plans it)",
+                                "for management access, check the interface management profile"], "nat"))
 
         # 4. destination NAT: route the translated address to find the post-NAT zone
         if nat is not None and nat.dst_address:
@@ -388,6 +446,14 @@ class Troubleshooter:
             else:
                 t.step("return-route", "ok", f"{back.interface} via {' -> '.join(back.vr_path)}")
         return t, out
+
+    def _snat_address(self, nat: NatRule) -> Optional[str]:
+        if nat.src_interface:
+            i = next((i for i in self.p.interfaces if i.name == nat.src_interface), None)
+            ip = i.ips[0] if i and i.ips else None
+            v = self.p.store.address_value(ip) if ip else None
+            return interval_str((v[0], v[1], v[1])) if v and "/" in ip else (ip or nat.src_interface)
+        return ", ".join(nat.src_addresses) or None
 
     def _route_step(self, t: FlowTrace, stage: str, rr: RouteResult) -> None:
         if rr.ok:
@@ -442,7 +508,7 @@ class Troubleshooter:
         allowed = final.action == "allow"
         cond_allow = [(r, why) for r, why in cond if r.action == "allow"]
         t.step("security", "ok" if allowed else "warn" if cond_allow else "fail",
-               f"rule {final.label} -> {final.action.upper()}  ({t.from_zone} -> {t.to_zone})"
+               f"rule {final.label} -> {final.action.upper()}  ({t.from_zone or '?'} -> {t.to_zone or '?'})"
                + ("  (unless a conditional allow above matches)" if cond_allow and not allowed else ""))
         t.verdict = "ALLOW" if allowed else "CONDITIONAL" if cond_allow else "DENY"
         t.reason = f"security rule {final.label} action {final.action}"
@@ -501,6 +567,18 @@ class Troubleshooter:
                                    [f"{k}: {v}" for k, v in profiles.items()], "profile"))
             else:
                 t.step("profiles", "info", "no security profiles attached")
+            url_prof = p.url_profiles.get(profiles.get("url-filtering", ""))
+            if flow.url_category and url_prof is not None:
+                action = url_prof.action_for(flow.url_category) or "allow"
+                t.step("url-filtering", "fail" if action in ("block", "continue", "override") else "ok",
+                       f"category {flow.url_category} -> {action} in profile '{url_prof.name}'")
+                if action in ("block", "continue", "override"):
+                    t.verdict, t.reason = "DENY", f"URL filtering profile '{url_prof.name}' {action}s {flow.url_category}"
+                    out.append(Finding("ERROR", "PROFILE_URL_BLOCK",
+                                       f"URL filtering profile '{url_prof.name}' on rule {final.label} sets category "
+                                       f"'{flow.url_category}' to {action}", [f"flow {fs}"], "url",
+                                       data={"profile": url_prof.name, "category": flow.url_category,
+                                             "rule": final.name, "urls": []}))
 
         for r, why in cond:
             if r.action in DENY_ACTIONS and allowed:
@@ -515,7 +593,7 @@ class Troubleshooter:
                 out.append(Finding("ERROR" if c.severity == "HIGH" else "WARNING",
                                    "APP_PORT_CONFLICT", f"Rule {r.label}: {c.message}",
                                    [f"flow {fs}", f"fix: use application-default or add {c.app_ports} to the "
-                                    f"service"], "policy"))
+                                    f"service"], "policy", data={"rule": r.name, "app": c.app}))
         if flow.app and flow.dport is not None and flow.proto:
             std = _app_ports(flow.app)
             if std and not any(pp == flow.proto and lo <= flow.dport <= hi for pp, lo, hi in std):
@@ -645,7 +723,10 @@ class Troubleshooter:
                 out.append(Finding("ERROR", "LOG_ZONE_PROTECTION",
                                    f"{len(entries)} x {threat} ({sub}, {sev}) {actions} by zone/DoS protection",
                                    _samples(entries) + zpp + ["review flood/reconnaissance thresholds, or exempt the "
-                                                              "source in the zone protection profile"], "threat"))
+                                                              "source in the zone protection profile"], "threat",
+                                   data={"zones": zones, "threat": threat,
+                                         "profiles": [p.zones[z].zone_protection for z in zones
+                                                      if z in p.zones and p.zones[z].zone_protection]}))
                 continue
             rule = p.rule(rname)
             ptype = SUBTYPE_PROFILE.get(sub, sub)
@@ -658,7 +739,10 @@ class Troubleshooter:
             out.append(Finding("ERROR", "LOG_THREAT_BLOCK",
                                f"{len(entries)} x '{threat}'" + (f" (ID {tid})" if tid else "")
                                + f" [{sub}, {sev}] {actions} by {where}",
-                               _samples(entries) + [fix], "threat"))
+                               _samples(entries) + [fix], "threat",
+                               data={"profile_type": ptype, "profile": prof, "threat": threat, "threat_id": tid,
+                                     "rule": rname, "ips": sorted({x for e in entries for x in (e.src, e.dst) if x}),
+                                     "severity": sev}))
         if alerts:
             names = Counter(f"{e.threat} [{e.subtype}, {e.severity}]" for e in alerts)
             out.append(Finding("INFO", "LOG_THREAT_ALERT", f"{len(alerts)} threat event(s) only alerted (not blocked)",
@@ -687,7 +771,9 @@ class Troubleshooter:
                            "allow-listed custom URL category; to re-categorise, submit it to PAN-DB")
             out.append(Finding("ERROR", "LOG_URL_BLOCK",
                                f"{len(entries)} request(s) to category '{cat}' {action} by URL filtering on rule "
-                               f"'{rname or '?'}'", details, "url"))
+                               f"'{rname or '?'}'", details, "url",
+                               data={"profile": prof.name if prof else prof_name, "category": cat, "rule": rname,
+                                     "urls": list(dict.fromkeys(e.url for e in entries if e.url))[:10]}))
         return out
 
     def _compare_with_logs(self, t: FlowTrace, rel: List[LogEntry]) -> List[Finding]:
@@ -755,7 +841,8 @@ def _dyn_note(dynamic: List[str], live: bool) -> List[str]:
 def _route_finding(rr: RouteResult, dst: Interval, fs: str, vr: str, dynamic: List[str], live: bool) -> Finding:
     if rr.discard:
         return Finding("ERROR", "ROUTE_DISCARD", f"Traffic to {interval_str(dst)} hits a discard route",
-                       [f"flow {fs}", rr.error or ""], "routing")
+                       [f"flow {fs}", rr.error or ""], "routing",
+                       data={"route": rr.route.describe() if rr.route else None})
     return Finding("ERROR", "ROUTE_NONE", f"No route to {interval_str(dst)} in virtual router '{vr}'",
                    [f"flow {fs}", rr.error or "", "add a static route (or a default route) towards the destination"]
                    + _dyn_note(dynamic, live), "routing")
@@ -832,7 +919,7 @@ _BLOCK_REASON = {
     "LOG_DENY": "denied in traffic logs", "LOG_DEFAULT_DENY": "interzone-default in traffic logs",
     "LOG_THREAT_BLOCK": "threat prevention profile", "LOG_SESSION_ENDED_BY_THREAT": "session ended by a security profile",
     "LOG_ZONE_PROTECTION": "zone protection", "LOG_URL_BLOCK": "URL filtering",
-    "APP_PORT_CONFLICT": "App-ID vs service-port conflict",
+    "APP_PORT_CONFLICT": "App-ID vs service-port conflict", "PROFILE_URL_BLOCK": "URL filtering",
 }
 
 
@@ -843,6 +930,8 @@ def _verdict(d: Diagnosis) -> Tuple[str, List[str]]:
             reasons.append(_BLOCK_REASON[f.code])
     if reasons:
         return "BLOCKED", reasons
+    if any(f.code == "DST_IS_FIREWALL" for f in d.findings):
+        return "TERMINATES ON THE FIREWALL", ["no destination NAT to a server"]
     if any(t.verdict == "CONDITIONAL" for t in d.traces):
         return "DEPENDS ON APP-ID/USER-ID", [t.reason for t in d.traces if t.verdict == "CONDITIONAL"][:1]
     if d.traces and all(t.verdict == "ALLOW" for t in d.traces):

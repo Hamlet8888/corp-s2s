@@ -163,7 +163,7 @@ blocked?** It reads the same exports (or pulls live, read-only), traces the pack
 and backs every conclusion with traffic, threat and URL-filtering logs.
 
 ```bash
-python3 fw_troubleshoot.py demo                 # 10 scenarios on fictional data; contacts nothing
+python3 fw_troubleshoot.py demo                 # 14 scenarios on fictional data; contacts nothing
 
 # offline: config export + log exports (XML API output or web-UI "Export to CSV")
 python3 fw_troubleshoot.py diagnose --config exports/fw01.xml \
@@ -174,6 +174,10 @@ python3 fw_troubleshoot.py diagnose --config exports/fw01.xml \
 # traffic/threat/URL logs, plus the firewall's own test security-policy-match / nat-policy-match / fib-lookup
 python3 fw_troubleshoot.py diagnose --host fw01.example.net --ip 10.20.1.0/24 \
     --since '2026/10/22 08:00:00' --verify --save reports/
+
+# "what do I need to add?": a missing route is planned via the next hop you name
+python3 fw_troubleshoot.py diagnose --config exports/fw01.xml --ip 10.20.1.15 --peer 172.20.5.10 \
+    --port 443 --app ssl --next-hop 10.255.0.2 --html reports/ticket-1234.html
 
 python3 fw_troubleshoot.py matrix --config exports/fw01.xml --src 10.20.1.15 --dst 10.30.0.0/24
 python3 fw_troubleshoot.py audit  --config exports/fw01.xml [--rule NAME] [--conflicts-only]
@@ -200,6 +204,37 @@ reported as *conditional* rather than guessed; the App-ID is taken from matching
 
 The verdict is `BLOCKED` (with the reasons), `ALLOWED`, `DEPENDS ON APP-ID/USER-ID` or `INCONCLUSIVE`. Exit
 codes: 2 = blocked/error, 1 = warnings, 0 = clean.
+
+Optional inputs: `--app`, `--user` (User-ID rules), `--url-category` (rule categories, and the URL filtering
+profile's action is predicted). Every diagnosis ends with a **fix plan** and **verification commands**;
+`--json` and `--html FILE` include both.
+
+### Fix plan: what to add, and where
+
+For each traced flow the planner goes through every layer and proposes only what is missing, as `set`
+commands for review (nothing is ever pushed):
+
+| Missing / wrong | What it recommends |
+|---|---|
+| Route (none, or a discard route) | A static route in the right virtual/logical router. With `--next-hop IP` it names the egress interface and zone and uses them for the NAT and security steps. Without it, placeholders. Same for the source side with `--return-next-hop`. |
+| Interface without zone | Put the interface in a zone (name suggested from the interface comment) |
+| Source NAT (private → internet) | Enable a disabled NAT rule that fits, else add the missing zone/source to the existing SNAT rule, else a new `dynamic-ip-and-port` rule on the egress interface |
+| Destination NAT | With `--dnat-to IP`: a new DNAT rule, and the security rule built with the **pre-NAT address and post-NAT zone** |
+| Security rule | 1. enable a disabled rule that already fits. 2. if the deny comes from an address group (e.g. quarantine), remove the host from the group. 3. **extend the closest existing allow rule** when it differs by one thing ("add application ssh to rule X", "add service tcp-8443", "add the source/destination object", "add user/URL category"), with a note on what else that rule opens. 4. otherwise a dedicated rule with address/service objects, App-ID + `application-default` (or the explicit port when it's non-standard), the profile group and log forwarding used elsewhere, placed **above** the rule that denies it today |
+| App-ID / port conflict | Replace the conflicting app (or switch to `application-default`) |
+| Threat block (from logs) | A threat exception for that ID in that profile, limited with `exempt-ip`. Only for a confirmed false positive. |
+| URL block (from logs or `--url-category`) | Allow-list the sites in a custom URL category on the rule's URL profile (or change the category action) |
+
+The planner deliberately prefers narrow changes. It never widens an `any`-destination rule to a new zone, and
+when a rule differs in two or more ways, or is port-based (`application any`), it recommends a dedicated rule
+and offers the extension only as an alternative.
+
+### Verification commands
+
+Each flow comes with copy-paste commands filled in with the zones, VR and NAT state that were worked out:
+`test security-policy-match ... show-all yes`, `test nat-policy-match` (with the pre-NAT zone),
+`test routing fib-lookup` (both directions and the NAT target), `show session all filter ...`, a packet-diag
+scoped `show counter global filter delta yes`, the Monitor-tab filter, and `test url` for blocked URLs.
 
 ### `matrix`: port & application auto-discovery
 
@@ -237,10 +272,47 @@ Rule by rule, with a recommendation for each item:
 | `troubleshoot/logs.py` | Traffic/threat/URL logs from XML API queries, saved XML or CSV exports |
 | `troubleshoot/engine.py` | Flow simulation and log correlation |
 | `troubleshoot/advisor.py` | Matrix, conflict inspector, best-practice audit |
+| `troubleshoot/remediate.py` | Fix plan: what's missing (route, zone, NAT, security, profiles) and the `set` commands |
+| `troubleshoot/commands.py` | Verification commands for the firewall CLI |
+| `troubleshoot/report.py` | Self-contained HTML report |
 | `troubleshoot/live.py` | Read-only live pulls and `test ...-match` cross-checks |
 
 Live mode uses `core/api.py` (POST only, key in a header, never logged, TLS verified), only issues reads, and
 saved data (`--save`) is written owner-only. Keep it in a git-ignored folder such as `reports/`.
+
+### Testing against a lab firewall
+
+Run it from a machine that can reach the firewall's management interface (it needs Python 3.9+ and
+`requests`). Everything is read-only.
+
+1. **Create a dedicated API admin**: Device > Admin Roles > new role. Web UI and REST API: none. XML API:
+   enable only *Operational Requests* and *Log* (the config is read with the operational `show config running`,
+   so *Configuration*, which would also allow writes, isn't needed); leave *Commit*, *Import*, *Export* and the
+   rest off. Then Device > Administrators > new admin with that role. Note that *Operational Requests* covers
+   every operational command; the tool itself only sends `show` and `test` commands.
+2. **Give it the key** without putting it on the command line:
+   `export PANOS_API_KEY_192_168_1_1=...` (host upper-cased, dots → `_`), or pass `--username` and get
+   prompted for the password (keygen; the key stays in memory).
+3. **TLS**: export the management certificate and pass `--ca-bundle mgmt.pem`. On a throw-away lab only,
+   `--insecure`.
+4. **Generate known traffic** from a lab client, then diagnose it:
+   - a deny rule for one test host, a flow with no rule, a missing route (`--next-hop` to see the plan)
+   - URL filtering: block a category and browse to a site in it
+   - antivirus: download the EICAR test file over HTTP
+   - App-ID/port: a rule with `web-browsing` on `tcp/22`, then SSH through it
+   ```bash
+   python3 fw_troubleshoot.py diagnose --host 192.168.1.1 --ca-bundle mgmt.pem --ip <client> --peer <server> \
+       --port 443 --verify --save reports/lab --html reports/lab/diag.html
+   python3 fw_troubleshoot.py matrix --host 192.168.1.1 --src <client> --dst <server-subnet>
+   python3 fw_troubleshoot.py audit  --host 192.168.1.1
+   ```
+5. **Check the result against the box**: `--verify` reports any disagreement with the firewall's own
+   `test security-policy-match` / `nat-policy-match` / `fib-lookup` as `LIVE_*_MISMATCH`, and the printed
+   verification commands can be pasted into the CLI. Anything that disagrees is worth a bug report, together
+   with the saved files from `--save` (they contain your lab addresses: review before sharing).
+
+On PAN-OS with Advanced Routing enabled, the live route table isn't parsed yet, so routes come from the config
+(static and connected only); `--verify`'s FIB lookup still checks them.
 
 ## Tests
 
@@ -248,10 +320,11 @@ saved data (`--save`) is written owner-only. Keep it in a git-ignored folder suc
 python3 -m unittest discover -s tests -t .
 ```
 
-77 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
+93 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
 redaction), the seven demo drift scenarios, planner symmetry, allocation and idempotency, brace parsing, and
 CLI gates, including a run that fails if anything touches the network. For pan-troubleshoot: every demo
-scenario, object/route resolution, CSV/XML log parsing, the matrix, conflicts, audit, live verification against a
+scenario, object/route resolution, CSV/XML log parsing, the fix planner (route/zone/NAT/security/profile
+combinations), verification commands, HTML escaping, the matrix, conflicts, audit, live verification against a
 fake API and brace-format configs.
 
 ## Status / roadmap

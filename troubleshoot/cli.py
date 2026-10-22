@@ -64,7 +64,8 @@ def _color(mode: str) -> bool:
 # Report
 # ---------------------------------------------------------------------------
 
-def format_diagnosis(d: Diagnosis, source: str = "", color: bool = False, min_severity: str = "INFO") -> str:
+def format_diagnosis(d: Diagnosis, source: str = "", color: bool = False, min_severity: str = "INFO",
+                     show_commands: bool = True) -> str:
     c = (lambda code, s: f"{code}{s}{_RESET}") if color else (lambda code, s: s)
     rank = {s: i for i, s in enumerate(SEVERITIES)}
     out = [c(_BOLD, f"Palo Alto troubleshooting: {d.hostname or '?'}") + (c(_DIM, f"  ({source})") if source else "")]
@@ -83,6 +84,17 @@ def format_diagnosis(d: Diagnosis, source: str = "", color: bool = False, min_se
         out.append(f"  => {c(_VERDICT_COLORS.get('BLOCKED' if t.verdict in ('DENY', 'DROP') else 'ALLOWED' if t.verdict == 'ALLOW' else '', _BOLD), t.verdict)}"
                    f"  {t.reason}")
         out.append("")
+    from .commands import format_commands
+    from .remediate import format_plan
+    for i, (plan, cmds) in enumerate(zip(d.plans, d.commands), 1):
+        if plan.steps or len(d.plans) == 1:
+            out.append(c(_BOLD, f"== Fix plan{f' (flow {i})' if len(d.plans) > 1 else ''}: {plan.flow}"))
+            out += format_plan(plan)
+            out.append("")
+        if show_commands:
+            out.append(c(_BOLD, f"== Verify on the firewall{f' (flow {i})' if len(d.plans) > 1 else ''}"))
+            out += format_commands(cmds)
+            out.append("")
     shown = [f for f in d.findings if rank[f.severity] <= rank[min_severity]]
     counts = {s: sum(1 for f in d.findings if f.severity == s) for s in SEVERITIES}
     out.append(c(_BOLD, "== Findings  ") + "   ".join(c(_COLORS[s], f"{s} {counts[s]}") for s in SEVERITIES))
@@ -225,14 +237,28 @@ def cmd_diagnose(args) -> int:
     else:
         sys.exit("diagnose needs --config FILE or --host HOST")
 
+    from .remediate import Hints
+    for label, value in (("--next-hop", args.next_hop), ("--return-next-hop", args.return_next_hop),
+                         ("--dnat-to", args.dnat_to)):
+        if value:
+            try:
+                parse_target(value)
+            except ValueError:
+                sys.exit(f"invalid address for {label}: {value}")
     ts = Troubleshooter(policy, logs, live=live)
     d = ts.diagnose(args.ip, args.peer, port=args.port, proto=args.protocol, app=args.app,
                     direction=args.direction, from_zone=args.from_zone, to_zone=args.to_zone,
-                    max_flows=args.max_flows)
+                    user=args.user, url_category=args.url_category, max_flows=args.max_flows,
+                    hints=Hints(args.next_hop, args.return_next_hop, args.dnat_to))
+    if args.html:
+        from .report import write_html
+        path = write_html(d, policy, args.html)
+        print(f"HTML report written to {path}", file=sys.stderr)
     if args.json:
         print(json.dumps(d.to_dict(), indent=1))
     else:
-        print(format_diagnosis(d, policy.source, color=_color(args.color), min_severity=args.min_severity))
+        print(format_diagnosis(d, policy.source, color=_color(args.color), min_severity=args.min_severity,
+                               show_commands=not args.no_commands))
     return exit_code(d)
 
 
@@ -249,6 +275,15 @@ DEMO_SCENARIOS = [
     ("Single IP, flows discovered from the logs", ["--ip", "10.10.20.66"]),
     ("SSH to the jump host: App-ID vs service-port conflict", ["--ip", "10.10.20.15", "--peer", "10.10.40.22",
                                                               "--port", "22", "--app", "ssh"]),
+    ("New guest Wi-Fi: NAT and security rule missing", ["--ip", "10.10.70.25", "--peer", "198.51.100.40",
+                                                        "--port", "443", "--app", "ssl"]),
+    ("Partner network behind the WAN router: route and security rule missing",
+     ["--ip", "10.10.20.15", "--peer", "172.20.5.10", "--port", "443", "--app", "ssl", "--next-hop", "10.255.0.2"]),
+    ("Lab interface: zone, NAT and security rule missing", ["--ip", "10.10.60.5", "--peer", "198.51.100.40",
+                                                            "--port", "443", "--app", "ssl"]),
+    ("Publish a server: destination NAT + security rule", ["--ip", "203.0.113.2", "--peer", "192.0.2.150",
+                                                           "--port", "8443", "--app", "ssl", "--direction", "in",
+                                                           "--dnat-to", "10.10.50.20"]),
 ]
 
 
@@ -261,7 +296,8 @@ def cmd_demo(args) -> int:
         print(bold(f"$ pan-troubleshoot diagnose --config {cfg.relative_to(DEMO_DIR.parent.parent)} --logs ... "
                    + " ".join(argv)))
         ns = _parser().parse_args(["diagnose", "--config", str(cfg)] + sum((["--logs", lp] for lp in logs), [])
-                                  + argv + ["--color", args.color, "--min-severity", "WARNING"])
+                                  + argv + ["--color", args.color, "--min-severity", "WARNING"]
+                                  + ([] if i == 1 else ["--no-commands"]))
         cmd_diagnose(ns)
     n = len(DEMO_SCENARIOS)
     print(bold(f"\n### {n + 1}/{n + 2} Port & application matrix between a user and the server subnet"))
@@ -328,6 +364,8 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--app", help="App-ID name, if known (e.g. ssl, ms-rdp)")
     q.add_argument("--direction", choices=("out", "in"), default="out",
                    help="out: ip -> peer (default); in: peer -> ip")
+    q.add_argument("--user", help="User-ID user (e.g. corp\\alice) to evaluate source-user rules")
+    q.add_argument("--url-category", help="URL category to evaluate rule categories and URL profiles")
     q.add_argument("--from-zone", help="override the ingress zone")
     q.add_argument("--to-zone", help="override the egress zone")
     q.add_argument("--max-flows", type=int, default=5, help="max flows taken from the logs (default 5)")
@@ -336,6 +374,12 @@ def _parser() -> argparse.ArgumentParser:
     lv.add_argument("--verify", action="store_true",
                     help="cross-check with the firewall's test security-policy-match / nat-policy-match / fib-lookup")
     lv.add_argument("--save", metavar="DIR", help="save the pulled config/routes/logs (use a git-ignored dir)")
+    fx = p.add_argument_group("fix plan hints")
+    fx.add_argument("--next-hop", metavar="IP", help="next hop towards the destination, for a missing route")
+    fx.add_argument("--return-next-hop", metavar="IP", help="next hop back towards the source")
+    fx.add_argument("--dnat-to", metavar="IP", help="internal server, to plan a destination NAT")
+    p.add_argument("--no-commands", action="store_true", help="hide the verification commands")
+    p.add_argument("--html", metavar="FILE", help="also write a self-contained HTML report")
     p.add_argument("--min-severity", choices=SEVERITIES, default="INFO")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     p.set_defaults(func=cmd_diagnose)
