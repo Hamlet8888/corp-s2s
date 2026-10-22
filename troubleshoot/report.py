@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .engine import Diagnosis
+from .engine import Diagnosis, log_summary
 from .policy import PolicyConfig
 
 _CSS = """
@@ -47,9 +47,7 @@ def render_html(d: Diagnosis, policy: PolicyConfig) -> str:
            f"<div class='muted'>{_e(policy.source)} · generated "
            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by pan-troubleshoot</div>",
            f"<div class='card'><div class='verdict {vclass}'>{_e(d.verdict)}</div>",
-           f"<div>{_e('; '.join(d.reasons))}</div><div class='muted'>logs: "
-           + _e(", ".join(f"{k} {d.log_counts.get(k, 0)} ({d.log_counts.get(k + '_blocked', 0)} blocked)"
-                          for k in ("traffic", "threat", "url"))) + "</div></div>"]
+           f"<div>{_e('; '.join(d.reasons))}</div><div class='muted'>logs: " + _e(log_summary(d)) + "</div></div>"]
     for i, t in enumerate(d.traces):
         out.append(f"<h2>Flow {i + 1}: {_e(t.flow)}</h2><div class='card'>")
         for s in t.steps:

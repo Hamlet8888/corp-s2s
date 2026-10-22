@@ -133,6 +133,12 @@ class Diagnosis:
                 "verification_commands": [c.to_dict() for c in self.commands]}
 
 
+def log_summary(d: Diagnosis) -> str:
+    """'traffic 500+ (0 blocked), ...': '+' marks a live query that hit the --nlogs limit."""
+    return ", ".join(f"{k} {d.log_counts.get(k, 0)}{'+' if d.log_counts.get(k + '_capped') else ''} "
+                     f"({d.log_counts.get(k + '_blocked', 0)} blocked)" for k in ("traffic", "threat", "url"))
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------

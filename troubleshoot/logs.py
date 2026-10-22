@@ -207,13 +207,18 @@ def fetch_logs(client, target: Interval, peer: Optional[Interval] = None, port: 
     """Query each log type for *target*; returns the entries and the raw XML per type (for --save)."""
     query = build_query(target, peer, port, since)
     out: List[LogEntry] = []
+    seen = set()
     raw: Dict[str, ET.Element] = {}
     for kind in kinds:
         entries = client.query_logs(kind, query, nlogs=nlogs)
         holder = ET.Element("logs", {"type": kind, "query": query})
         holder.extend(entries)
         raw[kind] = holder
-        out.extend(parse_xml_entries(entries, kind))
+        for e in parse_xml_entries(entries, kind):
+            key = (e.kind, e.time, e.src, e.dst, e.sport, e.dport, e.threat, e.url)
+            if key not in seen:                 # a URL entry can come back from both the threat and url queries
+                seen.add(key)
+                out.append(e)
     return out, raw
 
 

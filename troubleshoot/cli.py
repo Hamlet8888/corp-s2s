@@ -40,7 +40,7 @@ warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL")
 
 from core import __version__  # noqa: E402
 
-from .engine import SEVERITIES, Diagnosis, Troubleshooter  # noqa: E402
+from .engine import SEVERITIES, Diagnosis, Troubleshooter, log_summary  # noqa: E402
 from .logs import LogEntry, load_logs  # noqa: E402
 from .policy import load_policy  # noqa: E402
 
@@ -70,8 +70,7 @@ def format_diagnosis(d: Diagnosis, source: str = "", color: bool = False, min_se
     rank = {s: i for i, s in enumerate(SEVERITIES)}
     out = [c(_BOLD, f"Palo Alto troubleshooting: {d.hostname or '?'}") + (c(_DIM, f"  ({source})") if source else "")]
     out.append(f"  target {d.target}" + (f"   peer {d.peer}" if d.peer else "")
-               + "   logs: " + ", ".join(f"{k} {d.log_counts.get(k, 0)} ({d.log_counts.get(k + '_blocked', 0)} blocked)"
-                                         for k in ("traffic", "threat", "url")))
+               + "   logs: " + log_summary(d))
     vcol = next((v for k, v in _VERDICT_COLORS.items() if d.verdict.startswith(k)), _BOLD)
     out.append("  VERDICT: " + c(vcol, d.verdict) + (f"  ({'; '.join(d.reasons)})" if d.reasons else ""))
     out.append("")
@@ -207,6 +206,7 @@ def cmd_diagnose(args) -> int:
     except ValueError as exc:
         sys.exit(f"invalid address: {exc}")
     live = None
+    capped: List[str] = []
     logs = _load_logs(args.logs)
     if args.host:
         from core.api import PanosApiError
@@ -219,6 +219,10 @@ def cmd_diagnose(args) -> int:
             routes_xml = pull_routes(client, policy)
             pulled, raw = fetch_logs(client, target, peer, args.port, args.since, nlogs=args.nlogs)
             logs += pulled
+            capped = [k for k, el in raw.items() if len(el) >= args.nlogs]
+            if capped:
+                print(f"note: {', '.join(capped)} log query hit the --nlogs limit ({args.nlogs}); only the newest "
+                      f"entries were analysed (raise --nlogs or narrow with --since/--port)", file=sys.stderr)
         except PanosApiError as exc:
             sys.exit(f"error: {exc}")
         if args.save:
@@ -250,6 +254,8 @@ def cmd_diagnose(args) -> int:
                     direction=args.direction, from_zone=args.from_zone, to_zone=args.to_zone,
                     user=args.user, url_category=args.url_category, max_flows=args.max_flows,
                     hints=Hints(args.next_hop, args.return_next_hop, args.dnat_to))
+    for k in (capped if args.host else []):
+        d.log_counts[k + "_capped"] = 1
     if args.html:
         from .report import write_html
         path = write_html(d, policy, args.html)
