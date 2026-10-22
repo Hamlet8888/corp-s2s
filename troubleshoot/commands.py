@@ -99,7 +99,8 @@ def verification_commands(policy: PolicyConfig, t: FlowTrace, logs: Optional[Lis
     mon = [f"( addr.src in {interval_str(f.src)} ) and ( addr.dst in {interval_str(f.dst)} )"
            + (f" and ( port.dst eq {f.dport} )" if f.dport is not None else "")]
     cs.add("Monitor > Logs filter (traffic, threat, URL)", mon)
-    urls = [e.url for e in (logs or []) if e.kind == "url" and e.url]
+    urls = [e.url for e in (logs or []) if e.kind == "url" and e.url and e.blocked
+            and e.src == src and e.dst == dst]
     hosts = list(dict.fromkeys(u.split("/")[0] for u in urls))[:3]
     if hosts:
         cs.add("URL category lookup", [f"test url {h}" for h in hosts])

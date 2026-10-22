@@ -311,6 +311,8 @@ class Troubleshooter:
             per_flow.append(fnd)
         log_fnd = self._log_findings(rel, tiv)
         findings += log_fnd
+        for trace in diag.traces:
+            _mark_profile_blocks(trace, rel)
         findings += self._log_absence(rel, diag.traces)
 
         diag.findings = _dedupe(findings)
@@ -743,7 +745,8 @@ class Troubleshooter:
             out.append(Finding("ERROR", "LOG_SESSION_ENDED_BY_THREAT",
                                f"{len(by_threat)} allowed session(s) were torn down by a security profile "
                                f"(session end reason 'threat')", _samples(by_threat)
-                               + ["see the threat log findings for which profile and signature"], "threat"))
+                               + ["see the threat/URL findings below for which profile and signature or "
+                                  "category"], "threat"))
         no_reply = [e for e in traffic if not e.blocked and _no_reply(e)]
         if no_reply:
             out.append(Finding("WARNING", "LOG_NO_REPLY",
@@ -944,6 +947,22 @@ def _no_reply(e: LogEntry) -> bool:
     if e.packets_received == 0 or (e.packets_received is None and e.bytes_received == 0):
         return True
     return e.app == "incomplete" and (e.session_end_reason or "") == "aged-out" and not e.packets_received
+
+
+def _mark_profile_blocks(t: FlowTrace, rel: List[LogEntry]) -> None:
+    """A flow the policy allows can still be stopped by a profile: show that on the trace itself."""
+    if t.verdict != "ALLOW":
+        return
+    f = t.flow
+    hits = [e for e in rel if e.kind in ("threat", "url") and e.blocked and _in(e.src, f.src) and _in(e.dst, f.dst)
+            and (f.dport is None or e.dport is None or e.dport == f.dport)]
+    if not hits:
+        return
+    what = sorted({f"URL filtering ({e.category})" if e.kind == "url" else f"{e.subtype or 'threat'} '{e.threat}'"
+                   for e in hits})
+    t.step("logs", "fail", f"{len(hits)} session(s) blocked by {', '.join(what)}")
+    t.verdict = "PROFILE-BLOCK"
+    t.reason = f"allowed by rule '{t.security_rule}', then blocked by {', '.join(what)}"
 
 
 _VAGUE_APPS = {"incomplete", "insufficient-data", "not-applicable", "unknown-tcp", "unknown-udp", "unknown-p2p"}

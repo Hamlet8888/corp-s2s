@@ -80,7 +80,7 @@ def format_diagnosis(d: Diagnosis, source: str = "", color: bool = False, min_se
         for s in t.steps:
             tag = {"ok": " ok ", "fail": "FAIL", "warn": "WARN", "info": " -- "}[s.status]
             out.append(f"  {c(_COLORS[s.status], f'[{tag}]')} {s.stage:<15} {s.text}")
-        out.append(f"  => {c(_VERDICT_COLORS.get('BLOCKED' if t.verdict in ('DENY', 'DROP') else 'ALLOWED' if t.verdict == 'ALLOW' else '', _BOLD), t.verdict)}"
+        out.append(f"  => {c(_VERDICT_COLORS.get('BLOCKED' if t.verdict in ('DENY', 'DROP', 'PROFILE-BLOCK') else 'ALLOWED' if t.verdict == 'ALLOW' else '', _BOLD), t.verdict)}"
                    f"  {t.reason}")
         out.append("")
     from .commands import format_commands

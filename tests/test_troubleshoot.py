@@ -91,8 +91,9 @@ class TestDiagnose(unittest.TestCase):
 
     def test_threat_profile_block(self):
         d = self.ts.diagnose("10.10.20.15", "192.0.2.80", port=443)
-        self.assertEqual(d.traces[0].verdict, "ALLOW")
         self.assertEqual(d.traces[0].flow.app, "ssl")                 # inferred from traffic logs
+        self.assertEqual(d.traces[0].verdict, "PROFILE-BLOCK")
+        self.assertIn("then blocked by vulnerability", d.traces[0].reason)
         f = next(f for f in d.findings if f.code == "LOG_THREAT_BLOCK")
         self.assertIn("VP-Strict", f.message)
         self.assertIn("91991", f.message)
