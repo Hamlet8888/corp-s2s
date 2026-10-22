@@ -262,6 +262,48 @@ Rule by rule, with a recommendation for each item:
 | MEDIUM | apps on `service any` (use `application-default`); port-based rules (`application any`); zone `any`; incomplete profile groups (AV, anti-spyware, vulnerability, file blocking, WildFire, URL filtering for internet-bound); TLS rules not covered by SSL decryption; no session-end logging; shadowed rules; `interzone-default` not logging; no decryption policy |
 | LOW | disabled rules, no description, no log forwarding profile, `deny` instead of `drop` for inbound internet, interfaces with an IP but no zone |
 
+### Firewall Check web app (for helpdesk)
+
+The same engine in a browser, written for people who don't work on firewalls. Staff enter **the user's device**
+(IP or computer name) and **what they're trying to reach** (website, link or IP) and get a traffic-light answer:
+
+* **Blocked**, and why in plain English ("Blocked by web filtering: the site is classified as gambling, a category
+  company policy blocks"), **what to do next**, and **who to escalate to** (network or security team);
+* **Not blocked by the firewall**, with a checklist of where else to look;
+* **Needs a closer look** (depends on the application, or the server never answered).
+
+**Copy for ticket** puts a ready-made summary on the clipboard, and **Download report** saves the full HTML report
+for the network team. Technical details (step-by-step path, fix plan with commands, verification commands, all
+findings) are one click away but folded. Engineer pages add recent logs (with "Check this" on each row), the
+apps/ports matrix, rules/NAT/routes, security profiles and the best-practice audit.
+
+```bash
+pan-troubleshoot serve --demo                              # try it on fictional data: http://127.0.0.1:8080
+pan-troubleshoot serve --host 192.168.10.200 --insecure    # your firewall, on this computer only
+```
+
+**Sharing it with the helpdesk.** Run it on one machine that can reach the firewall's management interface (a small
+VM or jump host). Staff only need a browser, a link and a password; the API key never leaves that machine.
+
+1. A read-only API admin on the firewall (XML API: *Operational Requests* and *Log* only) and its key in
+   `PANOS_API_KEY_<HOST>`.
+2. A TLS certificate for the server's name from your internal CA (`--tls-cert`/`--tls-key`), and a shared password
+   (at least 12 characters) in `PT_WEB_PASSWORD`.
+3. Start it:
+   ```bash
+   pan-troubleshoot serve --host fw01.corp.example --ca-bundle mgmt-ca.pem \
+       --listen 0.0.0.0 --port 8443 --tls-cert fwcheck.pem --tls-key fwcheck.key --no-browser
+   ```
+   As a service, e.g. a systemd unit with `Environment=`/`EnvironmentFile=` (mode 0600) for the key and password,
+   `User=` a dedicated account, and `Restart=on-failure`.
+4. Give the helpdesk `https://fwcheck.corp.example:8443/`.
+
+Safety: the app only reads (no endpoint can change the firewall); it binds to 127.0.0.1 unless told otherwise and
+then refuses to start without a password and TLS (`--allow-plain-http` exists for trusted labs); every API call needs
+a per-run page token (other web sites can't drive it) and local mode checks the Host header (DNS rebinding); pages
+carry a strict Content-Security-Policy with no external scripts; inputs are validated; live log queries run one at a
+time; and each check is logged to stderr with time, client, user name and query.
+
 ### Modules
 
 | Module | Responsibility |
@@ -275,6 +317,8 @@ Rule by rule, with a recommendation for each item:
 | `troubleshoot/remediate.py` | Fix plan: what's missing (route, zone, NAT, security, profiles) and the `set` commands |
 | `troubleshoot/commands.py` | Verification commands for the firewall CLI |
 | `troubleshoot/report.py` | Self-contained HTML report |
+| `troubleshoot/helpdesk.py` | Plain-language answers, escalation and ticket text; URL/hostname input parsing |
+| `troubleshoot/web.py`, `troubleshoot/web/` | Firewall Check web app (read-only API + browser front end) |
 | `troubleshoot/live.py` | Read-only live pulls and `test ...-match` cross-checks |
 
 Live mode uses `core/api.py` (POST only, key in a header, never logged, TLS verified), only issues reads, and
@@ -324,12 +368,13 @@ On PAN-OS with Advanced Routing enabled, the live route table isn't parsed yet, 
 python3 -m unittest discover -s tests -t .
 ```
 
-93 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
+115 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
 redaction), the seven demo drift scenarios, planner symmetry, allocation and idempotency, brace parsing, and
 CLI gates, including a run that fails if anything touches the network. For pan-troubleshoot: every demo
 scenario, object/route resolution, CSV/XML log parsing, the fix planner (route/zone/NAT/security/profile
 combinations), verification commands, HTML escaping, the matrix, conflicts, audit, live verification against a
-fake API and brace-format configs.
+fake API and brace-format configs; the helpdesk wording, input parsing, and the web app's
+API and security checks (page token, Host header, login, exposure rules).
 
 ## Status / roadmap
 

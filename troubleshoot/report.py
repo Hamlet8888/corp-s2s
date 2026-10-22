@@ -23,6 +23,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
 padding:12px 16px;margin:8px 0}
 .verdict{font-size:20px;font-weight:700}.BLOCKED{color:var(--err)}.ALLOWED{color:var(--ok)}
 .other{color:var(--warn)}
+.hd{border-left:6px solid var(--warn)}.hd.blocked{border-left-color:var(--err)}.hd.allowed{border-left-color:var(--ok)}
 .step{display:grid;grid-template-columns:52px 120px minmax(0,1fr);gap:8px;padding:3px 0;border-top:1px solid var(--line)}
 .card,main{min-width:0;overflow-wrap:anywhere}h1,h2{overflow-wrap:anywhere}
 .tag{font-weight:700;font-size:12px}.ok{color:var(--ok)}.fail,.ERROR{color:var(--err)}
@@ -38,7 +39,8 @@ def _e(x) -> str:
     return html.escape(str(x if x is not None else ""))
 
 
-def render_html(d: Diagnosis, policy: PolicyConfig) -> str:
+def render_html(d: Diagnosis, policy: PolicyConfig, answer=None) -> str:
+    """*answer* is an optional :class:`troubleshoot.helpdesk.HelpdeskAnswer` shown first, in plain language."""
     vclass = "BLOCKED" if d.verdict.startswith("BLOCKED") else "ALLOWED" if d.verdict.startswith("ALLOWED") else "other"
     out = ["<!doctype html><html lang='en'><head><meta charset='utf-8'>",
            "<meta name='viewport' content='width=device-width,initial-scale=1'>",
@@ -48,6 +50,12 @@ def render_html(d: Diagnosis, policy: PolicyConfig) -> str:
            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by pan-troubleshoot</div>",
            f"<div class='card'><div class='verdict {vclass}'>{_e(d.verdict)}</div>",
            f"<div>{_e('; '.join(d.reasons))}</div><div class='muted'>logs: " + _e(log_summary(d)) + "</div></div>"]
+    if answer is not None:
+        out.insert(-1, f"<div class='card hd {_e(answer.status)}'><div class='verdict'>{_e(answer.headline)}</div>"
+                       f"<p>{_e(answer.explanation)}</p><ul>"
+                       + "".join(f"<li>{_e(x)}</li>" for x in answer.next_steps) + "</ul>"
+                       + (f"<p><b>Escalate to:</b> {_e(answer.escalate_to)}</p>" if answer.escalate_to else "")
+                       + "</div>")
     for i, t in enumerate(d.traces):
         out.append(f"<h2>Flow {i + 1}: {_e(t.flow)}</h2><div class='card'>")
         for s in t.steps:

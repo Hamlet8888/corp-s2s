@@ -1,0 +1,226 @@
+"""Helpdesk summaries, friendly input parsing and the web server (offline, demo data, localhost only)."""
+
+import argparse
+import base64
+import http.client
+import json
+import os
+import threading
+import unittest
+from unittest import mock
+
+from troubleshoot.cli import DEMO_DIR
+from troubleshoot.engine import Troubleshooter
+from troubleshoot.helpdesk import NETWORK_TEAM, SECURITY_TEAM, parse_destination, parse_device, summarize
+from troubleshoot.logs import load_logs
+from troubleshoot.policy import load_policy
+from troubleshoot.web import make_server
+
+CFG = DEMO_DIR / "branch-fw.xml"
+LOGS = sorted(DEMO_DIR.glob("*-logs.*"))
+
+
+def fake_resolver(host):
+    return {"github.com": ["140.82.114.3", "140.82.114.4"], "laptop-1": ["10.10.20.15"]}.get(host, [])
+
+
+class TestParsing(unittest.TestCase):
+    def test_destinations(self):
+        d = parse_destination("https://github.com/org/repo", resolver=fake_resolver)
+        self.assertEqual((d.host, d.ip, d.port, d.protocol), ("github.com", "140.82.114.3", 443, "tcp"))
+        self.assertIn("1 more", d.note)
+        self.assertEqual(parse_destination("github.com:8443", resolver=fake_resolver).port, 8443)
+        self.assertEqual(parse_destination("10.1.2.3").ip, "10.1.2.3")
+        self.assertEqual(parse_destination("10.1.0.0/16").ip, "10.1.0.0/16")
+        self.assertEqual(parse_destination("http://10.1.2.3/x").port, 80)
+        with self.assertRaises(ValueError):
+            parse_destination("nonexistent.invalid", resolver=fake_resolver)
+        with self.assertRaises(ValueError):
+            parse_destination("bad host<script>")
+
+    def test_devices(self):
+        self.assertEqual(parse_device("laptop-1", resolver=fake_resolver)[0], "10.10.20.15")
+        self.assertEqual(parse_device("10.10.20.0/24")[0], "10.10.20.0/24")
+        with self.assertRaises(ValueError):
+            parse_device("not a host!")
+
+
+class TestSummaries(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.policy = load_policy(CFG)
+        cls.logs = [e for p in LOGS for e in load_logs(p)]
+
+    def answer(self, *args, logs=True, **kw):
+        d = Troubleshooter(self.policy, self.logs if logs else []).diagnose(*args, **kw)
+        return summarize(d, args[0], args[1] if len(args) > 1 else None, kw.get("port"), policy=self.policy)
+
+    def test_url_block(self):
+        a = self.answer("10.10.20.33", "198.51.100.77", port=443)
+        self.assertEqual((a.status, a.escalate_to), ("blocked", NETWORK_TEAM))
+        self.assertIn("gambling", a.headline)
+        self.assertIn("casino.example.com", a.explanation)
+        self.assertIn("Result: BLOCKED", a.ticket_text)
+
+    def test_threat_goes_to_security(self):
+        a = self.answer("10.10.20.15", "192.0.2.80", port=443)
+        self.assertEqual((a.status, a.escalate_to), ("blocked", SECURITY_TEAM))
+        self.assertIn("Log4j", a.explanation)
+
+    def test_quarantine_goes_to_security(self):
+        a = self.answer("10.10.20.66")
+        self.assertEqual(a.escalate_to, SECURITY_TEAM)
+        self.assertIn("INC-0042", a.explanation)
+        self.assertIn("198.51.100.25", a.explanation)          # destination taken from the logs
+
+    def test_no_access(self):
+        a = self.answer("10.10.30.5", "10.10.40.10", port=1433, logs=False)
+        self.assertEqual(a.headline, "No access has been granted")
+
+    def test_network_problem(self):
+        a = self.answer("10.10.20.15", "172.31.5.5", port=22, logs=False)
+        self.assertEqual(a.headline, "Network setup problem")
+
+    def test_allowed(self):
+        a = self.answer("192.0.2.150", "203.0.113.10", port=443, direction="in", app="ssl", logs=False)
+        self.assertEqual((a.status, a.escalate_to), ("allowed", None))
+
+    def test_depends_on_app(self):
+        a = self.answer("10.10.20.40", "198.51.100.9", port=443, logs=False)
+        self.assertEqual(a.status, "check")
+
+    def test_no_jargon_in_headlines(self):
+        for args, kw in ((("10.10.20.33", "198.51.100.77"), {"port": 443}), (("10.10.30.5", "10.10.40.10"), {"port": 1433})):
+            a = self.answer(*args, **kw)
+            for word in ("interzone", "NAT", "zone", "PROFILE-BLOCK", "vsys"):
+                self.assertNotIn(word, a.headline)
+
+
+def serve_args(**kw):
+    ns = argparse.Namespace(host=None, config=str(CFG), logs=[str(p) for p in LOGS], demo=True, vsys="vsys1",
+                            username=None, serial=None, ca_bundle=None, insecure=False, listen="127.0.0.1", port=0,
+                            tls_cert=None, tls_key=None, allow_plain_http=False, no_browser=True)
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+class WebTestBase(unittest.TestCase):
+    password = None
+
+    @classmethod
+    def setUpClass(cls):
+        env = {"PT_WEB_PASSWORD": cls.password} if cls.password else {}
+        with mock.patch.dict(os.environ, env, clear=False):
+            if not cls.password:
+                os.environ.pop("PT_WEB_PASSWORD", None)
+            cls.srv = make_server(serve_args())
+        cls.port = cls.srv.server_address[1]
+        cls.quiet = mock.patch("sys.stderr", new_callable=lambda: open(os.devnull, "w"))
+        cls.quiet.start()
+        cls.thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        cls.quiet.stop()
+
+    def req(self, method, path, body=None, headers=None, host="127.0.0.1"):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        h = {"Host": f"{host}:{self.port}"}
+        h.update(headers or {})
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            h["Content-Type"] = "application/json"
+        c.request(method, path, body=data, headers=h)
+        r = c.getresponse()
+        payload = r.read()
+        c.close()
+        return r, payload
+
+
+class TestWebLocal(WebTestBase):
+    def token(self):
+        r, page = self.req("GET", "/")
+        self.assertEqual(r.status, 200)
+        self.assertIn("default-src 'self'", r.getheader("Content-Security-Policy"))
+        return page.decode().split('name="pt-token" content="')[1].split('"')[0]
+
+    def test_token_required(self):
+        r, _ = self.req("GET", "/api/status")
+        self.assertEqual(r.status, 403)
+        r, body = self.req("GET", "/api/status", headers={"X-PT-Token": self.token()})
+        self.assertEqual((r.status, json.loads(body)["mode"]), (200, "demo"))
+
+    def test_foreign_host_rejected(self):          # DNS rebinding guard
+        r, _ = self.req("GET", "/", host="attacker.example")
+        self.assertEqual(r.status, 403)
+
+    def test_check_and_report(self):
+        t = self.token()
+        r, body = self.req("POST", "/api/check", {"device": "10.10.20.33", "destination": "198.51.100.77", "port": "443"},
+                           {"X-PT-Token": t})
+        data = json.loads(body)
+        self.assertEqual(r.status, 200, data)
+        self.assertEqual(data["answer"]["status"], "blocked")
+        r, html = self.req("GET", f"/api/report/{data['report_id']}?t={t}")
+        self.assertEqual(r.status, 200)
+        self.assertIn(b"Blocked by web filtering", html)
+        self.assertIn("attachment", r.getheader("Content-Disposition"))
+
+    def test_bad_input_is_a_clear_400(self):
+        t = self.token()
+        r, body = self.req("POST", "/api/check", {"device": "<script>", "destination": ""}, {"X-PT-Token": t})
+        self.assertEqual(r.status, 400)
+        self.assertIn("not a valid", json.loads(body)["error"])
+        r, body = self.req("POST", "/api/check", {"device": "10.10.20.33", "app": "x'; rm -rf /"}, {"X-PT-Token": t})
+        self.assertEqual(r.status, 400)
+
+    def test_engineer_endpoints(self):
+        t = {"X-PT-Token": self.token()}
+        for path in ("/api/rules", "/api/profiles", "/api/audit"):
+            r, body = self.req("GET", path, headers=t)
+            self.assertEqual(r.status, 200, path)
+        r, body = self.req("POST", "/api/logs", {"device": "10.10.20.66", "kind": "blocked"}, t)
+        self.assertEqual(json.loads(body)["total"], 4)
+        r, body = self.req("POST", "/api/matrix", {"source": "10.10.20.15", "destination": "10.10.40.0/24"}, t)
+        self.assertEqual(len(json.loads(body)["matrices"]), 2)
+
+    def test_static_and_favicon(self):
+        self.assertEqual(self.req("GET", "/app.js")[0].status, 200)
+        self.assertEqual(self.req("GET", "/favicon.ico")[0].status, 204)
+        self.assertEqual(self.req("GET", "/../core/api.py")[0].status, 404)
+
+
+class TestWebPassword(WebTestBase):
+    password = "correct-horse-battery"
+
+    def test_login_required(self):
+        r, _ = self.req("GET", "/")
+        self.assertEqual(r.status, 401)
+        auth = "Basic " + base64.b64encode(b"helpdesk:" + self.password.encode()).decode()
+        r, _ = self.req("GET", "/", headers={"Authorization": auth}, host="fwcheck.corp.example")
+        self.assertEqual(r.status, 200)
+        bad = "Basic " + base64.b64encode(b"helpdesk:wrong").decode()
+        self.assertEqual(self.req("GET", "/", headers={"Authorization": bad})[0].status, 401)
+
+
+class TestExposureRules(unittest.TestCase):
+    def test_network_listen_needs_password_and_tls(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PT_WEB_PASSWORD", None)
+            with self.assertRaises(SystemExit):
+                make_server(serve_args(listen="0.0.0.0"))
+        with mock.patch.dict(os.environ, {"PT_WEB_PASSWORD": "long-enough-password"}):
+            with self.assertRaises(SystemExit):
+                make_server(serve_args(listen="0.0.0.0"))          # no TLS and no --allow-plain-http
+        with mock.patch.dict(os.environ, {"PT_WEB_PASSWORD": "short"}):
+            with self.assertRaises(SystemExit):
+                make_server(serve_args(listen="0.0.0.0", allow_plain_http=True))
+
+
+if __name__ == "__main__":
+    unittest.main()

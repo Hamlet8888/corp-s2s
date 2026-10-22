@@ -19,3 +19,6 @@ pan-troubleshoot = "troubleshoot.cli:main"
 
 [tool.setuptools]
 packages = ["core", "troubleshoot"]
+
+[tool.setuptools.package-data]
+troubleshoot = ["web/*"]

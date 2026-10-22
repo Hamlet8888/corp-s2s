@@ -316,6 +316,13 @@ def cmd_demo(args) -> int:
     return 0
 
 
+def _serve(args) -> int:
+    from .web import cmd_serve
+    if args.tls_cert and not args.tls_key:
+        sys.exit("--tls-cert needs --tls-key")
+    return cmd_serve(args)
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="pan-troubleshoot",
                                  description="Find out why a Palo Alto firewall blocks an IP or subnet: routing, "
@@ -357,6 +364,21 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--conflicts-only", action="store_true", help="only App-ID vs service-port conflicts")
     p.add_argument("--min-severity", choices=("HIGH", "MEDIUM", "LOW", "INFO"), default="LOW")
     p.set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("serve", help="web app for helpdesk and engineers (read-only)",
+                       description="Serve the Firewall Check web app. Local only by default; to share it, set "
+                                   "PT_WEB_PASSWORD and use --listen with --tls-cert/--tls-key.")
+    source(p, logs=True)
+    p.add_argument("--logs", action="append", metavar="FILE", help="log files to use with --config")
+    p.add_argument("--demo", action="store_true", help="serve the fictional demo firewall")
+    w = p.add_argument_group("web server")
+    w.add_argument("--listen", default="127.0.0.1", help="address to listen on (default 127.0.0.1: this computer only)")
+    w.add_argument("--port", type=int, default=8080)
+    w.add_argument("--tls-cert", metavar="PEM", help="HTTPS certificate (required with --listen on a network address)")
+    w.add_argument("--tls-key", metavar="PEM")
+    w.add_argument("--allow-plain-http", action="store_true", help="allow HTTP on a network address (trusted LAN only)")
+    w.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    p.set_defaults(func=_serve)
 
     p = sub.add_parser("diagnose", help="diagnose an IP/subnet (read-only)")
     lv = source(p, logs=True)
