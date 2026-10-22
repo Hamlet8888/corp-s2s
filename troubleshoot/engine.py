@@ -388,8 +388,8 @@ class Troubleshooter:
             t.nat_src = self._snat_address(nat)
             t.step("nat", "ok", f"rule {nat.label}: {nat.describe()}"
                    + (f"  => source becomes {t.nat_src}" if t.nat_src else "")
-                   + (f"  => destination becomes {nat.dst_address}" + (f":{nat.dst_port}" if nat.dst_port else "")
-                      if nat.dst_address else ""))
+                   + (f"  => destination becomes {self._addr_label(nat.dst_address)}"
+                      + (f":{nat.dst_port}" if nat.dst_port else "") if nat.dst_address else ""))
         else:
             t.step("nat", "info", "no NAT rule matches (traffic is not translated)")
         for r, why in nat_cond:
@@ -397,7 +397,7 @@ class Troubleshooter:
         if nat is None and is_private(flow.src) and not is_private(flow.dst):
             out.append(Finding("WARNING", "NAT_NO_SOURCE_NAT",
                                f"Private source {interval_str(flow.src)} goes to public {interval_str(flow.dst)} "
-                               f"({t.from_zone} -> {pre_nat_zone}) with no source NAT; replies cannot come back",
+                               f"({t.from_zone or '?'} -> {pre_nat_zone}) with no source NAT; replies cannot come back",
                                [f"flow {fs}"] + [f"disabled NAT rule {r.label} would match" for r in nat_disabled]
                                + ["add a source NAT rule (dynamic-ip-and-port) for this zone pair"], "nat",
                                data={"disabled_nat": [r.name for r in nat_disabled]}))
@@ -447,12 +447,17 @@ class Troubleshooter:
                 t.step("return-route", "ok", f"{back.interface} via {' -> '.join(back.vr_path)}")
         return t, out
 
+    def _addr_label(self, name: str) -> str:
+        iv = self.p.store.address_value(name)
+        return f"{name} ({interval_str(iv)})" if iv and interval_str(iv) != name else name
+
     def _snat_address(self, nat: NatRule) -> Optional[str]:
         if nat.src_interface:
             i = next((i for i in self.p.interfaces if i.name == nat.src_interface), None)
             ip = i.ips[0] if i and i.ips else None
-            v = self.p.store.address_value(ip) if ip else None
-            return interval_str((v[0], v[1], v[1])) if v and "/" in ip else (ip or nat.src_interface)
+            if ip and ip in self.p.store.addresses:           # interface IP given as an address object
+                ip = self.p.store.addresses[ip][1]
+            return ip.split("/")[0] if ip else nat.src_interface
         return ", ".join(nat.src_addresses) or None
 
     def _route_step(self, t: FlowTrace, stage: str, rr: RouteResult) -> None:
@@ -525,7 +530,7 @@ class Troubleshooter:
                 msg = (f"Only {', '.join(r.label for r, _ in cond_allow)} can allow this traffic, and only when: "
                        f"{'; '.join(cond_allow[0][1])}. Anything else falls through to {final.name} (deny)")
             else:
-                msg = (f"No security rule allows {t.from_zone} -> {t.to_zone} for this traffic; "
+                msg = (f"No security rule allows {t.from_zone or '?'} -> {t.to_zone or '?'} for this traffic; "
                        f"it falls through to {final.name} ({final.action})")
             details = [f"flow {fs}"] + log_note + hint
             details += [f"near miss: rule {r.label} matches except {why}" for r, why in near[:5]]
