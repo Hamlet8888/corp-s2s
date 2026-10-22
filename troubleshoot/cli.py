@@ -49,7 +49,7 @@ DEMO_DIR = Path(__file__).resolve().parent.parent / "examples" / "troubleshoot"
 _RESET, _BOLD, _DIM = "\033[0m", "\033[1m", "\033[2m"
 _COLORS = {"ERROR": "\033[31m", "WARNING": "\033[33m", "INFO": "\033[36m",
            "fail": "\033[31m", "warn": "\033[33m", "ok": "\033[32m", "info": "\033[36m"}
-_VERDICT_COLORS = {"BLOCKED": "\033[1;31m", "ALLOWED": "\033[1;32m"}
+_VERDICT_COLORS = {"BLOCKED": "\033[1;31m", "ALLOWED": "\033[1;32m", "NO BLOCKS": "\033[1;32m"}
 
 
 def _color(mode: str) -> bool:

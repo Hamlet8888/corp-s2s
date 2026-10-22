@@ -356,6 +356,15 @@ class TestUrlSummary(unittest.TestCase):
         self.assertIn("1 x high-risk (alert)", f.details)
 
 
+class TestNoBlocks(unittest.TestCase):
+    def test_clean_logs_without_peer(self):
+        e = LogEntry("traffic", src="10.10.20.15", dst="198.51.100.9", dport=443, proto="tcp", action="allow",
+                     rule="Users-to-Internet", packets_received=10)
+        d = Troubleshooter(policy(), [e]).diagnose("10.10.20.15")
+        self.assertEqual(d.verdict, "NO BLOCKS FOUND")
+        self.assertEqual(cli.exit_code(d), 0)
+
+
 class TestUserAndCategory(unittest.TestCase):
     def test_url_category_prediction(self):
         d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",

@@ -697,7 +697,8 @@ class Troubleshooter:
                                        + (" (part of the subnet)" if rel == PARTIAL else ""),
                                        [f"rule: {_rule_summary(r)}"], "policy"))
         out.append(Finding("INFO", "NO_FLOW",
-                           "No peer given and no blocked flows in the logs, so no path was simulated",
+                           "No peer given and no blocked flows in the logs, so no path was simulated"
+                           if self.logs else "No peer given and no logs to find flows in, so no path was simulated",
                            ["re-run with --peer IP [--port N] to trace a specific flow"], "logs"))
         return out
 
@@ -1019,6 +1020,10 @@ def _verdict(d: Diagnosis) -> Tuple[str, List[str]]:
         return "TERMINATES ON THE FIREWALL", ["no destination NAT to a server"]
     if any(t.verdict == "CONDITIONAL" for t in d.traces):
         return "DEPENDS ON APP-ID/USER-ID", [t.reason for t in d.traces if t.verdict == "CONDITIONAL"][:1]
+    if not d.traces and any(d.log_counts.get(k) for k in ("traffic", "threat", "url")) \
+            and not any(d.log_counts.get(k + "_blocked") for k in ("traffic", "threat", "url")):
+        return "NO BLOCKS FOUND", [f"{sum(d.log_counts.get(k, 0) for k in ('traffic', 'threat', 'url'))} log "
+                                   f"entries checked, none blocked"]
     if d.traces and all(t.verdict == "ALLOW" for t in d.traces):
         cond = any(t.conditional_rules for t in d.traces) or any(f.code == "LOG_NO_REPLY" for f in d.findings)
         return ("ALLOWED (with caveats)" if cond else "ALLOWED"), []
