@@ -311,6 +311,10 @@ Run it from a machine that can reach the firewall's management interface (it nee
    verification commands can be pasted into the CLI. Anything that disagrees is worth a bug report, together
    with the saved files from `--save` (they contain your lab addresses: review before sharing).
 
+Verified live against a PA-445 on PAN-OS 12.2.4 (legacy virtual router): running config, live routing table,
+traffic-log queries with App-ID, TCP and UDP flows, and `--verify` (`test security-policy-match`, including
+`show-all yes`, and `test nat-policy-match`) all agree with the firewall.
+
 On PAN-OS with Advanced Routing enabled, the live route table isn't parsed yet, so routes come from the config
 (static and connected only); `--verify`'s FIB lookup still checks them.
 
