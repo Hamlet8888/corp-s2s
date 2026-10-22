@@ -796,6 +796,17 @@ class Troubleshooter:
             out.append(Finding("INFO", "LOG_THREAT_ALERT", f"{len(alerts)} threat event(s) only alerted (not blocked)",
                                [f"{n} x {k}" for k, n in names.most_common(5)], "threat"))
 
+        # URL logs that didn't block anything: summarise them so the count isn't a mystery
+        seen_urls = [e for e in urls if not e.blocked]
+        if seen_urls:
+            cats = Counter(f"{e.category or '?'} ({e.action or '?'})" for e in seen_urls)
+            sample = list(dict.fromkeys(e.url for e in seen_urls if e.url))[:5]
+            out.append(Finding("INFO", "LOG_URL_SEEN", f"{len(seen_urls)} URL log entr{'y' if len(seen_urls) == 1 else 'ies'} "
+                               f"without a block", [f"{n} x {k}" for k, n in cats.most_common(5)]
+                               + [f"url: {u}" for u in sample]
+                               + ["HTTPS sites are categorised by name only (no decryption): a blocked path like "
+                                  "/test-malware is only seen over plain HTTP"], "url"))
+
         # URL filtering blocks
         ugroups: Dict[tuple, List[LogEntry]] = defaultdict(list)
         for e in urls:

@@ -346,6 +346,15 @@ class TestLogAbsence(unittest.TestCase):
         self.assertIn("LOG_NOT_PROVIDED", codes(d))
 
 
+class TestUrlSummary(unittest.TestCase):
+    def test_unblocked_url_logs_are_summarised(self):
+        e = LogEntry("url", src="10.10.20.15", dst="198.51.100.9", dport=443, proto="tcp", action="alert",
+                     category="high-risk", url="example.org/")
+        d = Troubleshooter(policy(), [e]).diagnose("10.10.20.15")
+        f = next(f for f in d.findings if f.code == "LOG_URL_SEEN")
+        self.assertIn("1 x high-risk (alert)", f.details)
+
+
 class TestUserAndCategory(unittest.TestCase):
     def test_url_category_prediction(self):
         d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",
