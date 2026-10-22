@@ -253,6 +253,9 @@ class PanosApiClient:
         self._key: Optional[str] = None
         if verify is False:
             log.warning("%s: TLS certificate verification is DISABLED", host)
+            # already warned once above; don't let urllib3 repeat it on every request
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         key = api_key or (secret_provider(host) if secret_provider else None) \
             or os.environ.get(_env_key_name(host)) or os.environ.get("PANOS_API_KEY")
         if key:
@@ -278,7 +281,8 @@ class PanosApiClient:
         """
         user = username or self._username or os.environ.get("PANOS_USERNAME")
         if not user:
-            raise PanosAuthError("no username for keygen (pass username= or set PANOS_USERNAME)", host=self.host)
+            raise PanosAuthError("no API key and no username: set PANOS_API_KEY_<HOST> / PANOS_API_KEY, "
+                                 "pass --username (CLI) / username=, or set PANOS_USERNAME", host=self.host)
         pw = password or os.environ.get("PANOS_PASSWORD") or getpass.getpass(f"Password for {user}@{self.host}: ")
         _REDACTOR.add_secret(pw)
         root = self._request({"type": "keygen", "user": user, "password": pw}, auth=False, read=True)
@@ -330,7 +334,9 @@ class PanosApiClient:
 
     def _handle(self, resp: requests.Response, raw: bool) -> Union[ET.Element, bytes]:
         if resp.status_code in (401, 403):
-            raise PanosAuthError(f"{self.host}: authentication failed (HTTP {resp.status_code})",
+            raise PanosAuthError(f"{self.host}: authentication failed (HTTP {resp.status_code}): wrong user/password "
+                                 f"or key, or the admin role has no XML API access (see Monitor > Logs > System, "
+                                 f"subtype auth)",
                                  code=str(resp.status_code), host=self.host)
         if resp.status_code >= 400:
             raise PanosResponseError(f"{self.host}: HTTP {resp.status_code}", code=str(resp.status_code),
