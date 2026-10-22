@@ -360,6 +360,10 @@ class Troubleshooter:
             t.verdict, t.reason = "DROP", fwd.error or "no route"
             return t, out
         out += self._split_check(t.vr, flow.dst, fwd, fs)
+        private_via_default = (not flow.to_zone and fwd.route is not None and fwd.route.prefixlen == 0
+                               and is_private(flow.dst))
+        if private_via_default:
+            out.append(self._private_via_default(flow, fwd, fs))
         t.egress_if = fwd.interface
         t.to_zone = flow.to_zone or p.zone_of(fwd.interface)
         if not t.to_zone:
@@ -433,6 +437,9 @@ class Troubleshooter:
 
         # 5. security policy: pre-NAT addresses, post-NAT destination zone
         out += self._security(t, flow)
+        if private_via_default and out and any(f.code == "ROUTE_PRIVATE_VIA_DEFAULT" and f.severity == "ERROR"
+                                               for f in out):
+            t.verdict, t.reason = "DROP", "private destination is routed to the internet instead of the VPN"
 
         # 6. return route from the egress virtual router (matters when next-vr was involved)
         last_vr = fwd.vr_path[-1] if fwd.vr_path else t.vr
@@ -447,6 +454,32 @@ class Troubleshooter:
                 t.step("return-route", "ok", f"{back.interface} via {' -> '.join(back.vr_path)}")
         return t, out
 
+    def _private_via_default(self, flow: Flow, fwd: RouteResult, fs: str) -> Finding:
+        """A private destination leaving through the default route almost always means a missing VPN/WAN route."""
+        zone = self.p.zone_of(fwd.interface)
+        details = [f"flow {fs}", f"the only matching route is the default route {fwd.route.describe()}"]
+        data: Dict[str, object] = {}
+        vpns = self.p.vpn_for(flow.dst, flow.src)
+        if vpns:
+            tun, pid, remote = vpns[0]
+            gws = [g for g in self.p.ike_gateways if g.name in tun.gateways]
+            data = {"tunnel": tun.name, "interface": tun.tunnel_interface, "network": interval_str(remote),
+                    "tunnel_disabled": tun.disabled, "gateways": [g.name for g in gws],
+                    "gateways_disabled": [g.name for g in gws if g.disabled]}
+            details.append(f"IPsec tunnel '{tun.name}' ({tun.tunnel_interface}) is meant to carry "
+                           f"{interval_str(remote)} (proxy-id '{pid}'), but no route points at "
+                           f"{tun.tunnel_interface}")
+            if tun.disabled:
+                details.append(f"tunnel '{tun.name}' is DISABLED")
+            for g in data["gateways_disabled"]:
+                details.append(f"IKE gateway '{g}' is DISABLED")
+        else:
+            details.append("add a route towards the VPN/WAN that reaches it (or check it isn't a typo)")
+        return Finding("ERROR" if vpns else "WARNING", "ROUTE_PRIVATE_VIA_DEFAULT",
+                       f"Private destination {interval_str(flow.dst)} follows the default route out of "
+                       f"{fwd.interface} (zone {zone or '?'}) to the internet, where it can't be reached",
+                       details, "routing", data=data)
+
     def _addr_label(self, name: str) -> str:
         iv = self.p.store.address_value(name)
         return f"{name} ({interval_str(iv)})" if iv and interval_str(iv) != name else name
@@ -454,6 +487,8 @@ class Troubleshooter:
     def _snat_address(self, nat: NatRule) -> Optional[str]:
         if nat.src_interface:
             i = next((i for i in self.p.interfaces if i.name == nat.src_interface), None)
+            if i is not None and i.dhcp and not i.ips:
+                return f"{nat.src_interface}'s DHCP address"
             ip = i.ips[0] if i and i.ips else None
             if ip and ip in self.p.store.addresses:           # interface IP given as an address object
                 ip = self.p.store.addresses[ip][1]
@@ -924,7 +959,8 @@ _BLOCK_REASON = {
     "LOG_DENY": "denied in traffic logs", "LOG_DEFAULT_DENY": "interzone-default in traffic logs",
     "LOG_THREAT_BLOCK": "threat prevention profile", "LOG_SESSION_ENDED_BY_THREAT": "session ended by a security profile",
     "LOG_ZONE_PROTECTION": "zone protection", "LOG_URL_BLOCK": "URL filtering",
-    "APP_PORT_CONFLICT": "App-ID vs service-port conflict", "PROFILE_URL_BLOCK": "URL filtering",
+    "APP_PORT_CONFLICT": "App-ID vs service-port conflict",
+    "ROUTE_PRIVATE_VIA_DEFAULT": "private destination routed to the internet (missing VPN route)", "PROFILE_URL_BLOCK": "URL filtering",
 }
 
 

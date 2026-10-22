@@ -320,6 +320,23 @@ class TestRemediation(unittest.TestCase):
         self.assertTrue(d.plans[0].steps[0].commands[0].startswith("set vsys vsys2 rulebase nat"))
 
 
+    def test_private_destination_via_default_route_points_at_vpn(self):
+        from core.parser import IpsecTunnel, ProxyId
+        p = policy()
+        p.ipsec_tunnels = [IpsecTunnel("VPN-SITE-B", "tunnel.9", ["GW-B"], None,
+                                       [ProxyId("pid", "10.10.20.0/24", "192.168.99.0/24")], disabled=True)]
+        d = Troubleshooter(p).diagnose("10.10.20.15", "192.168.99.5", port=443, app="ssl")
+        f = next(f for f in d.findings if f.code == "ROUTE_PRIVATE_VIA_DEFAULT")
+        self.assertEqual((f.severity, f.data["tunnel"]), ("ERROR", "VPN-SITE-B"))
+        self.assertEqual(d.verdict, "BLOCKED")
+        plan = d.plans[0]
+        self.assertIn("destination 192.168.99.0/24 interface tunnel.9 metric 10", plan.steps[0].commands[0])
+        self.assertIn("set network tunnel ipsec VPN-SITE-B disabled no",
+                      [c for s in plan.steps for c in s.commands])
+        # a public destination via the default route is normal
+        self.assertNotIn("ROUTE_PRIVATE_VIA_DEFAULT", codes(Troubleshooter(p).diagnose("10.10.20.15", "198.51.100.9")))
+
+
 class TestUserAndCategory(unittest.TestCase):
     def test_url_category_prediction(self):
         d = Troubleshooter(policy()).diagnose("10.10.20.40", "198.51.100.9", port=443, app="ssl",

@@ -68,9 +68,9 @@ class FixPlan:
         return asdict(self)
 
 
-_AREA_LABEL = {"routing": "route", "zone": "zone", "nat": "NAT rule", "security": "security rule",
-               "profile": "security profile", "url": "URL filtering"}
-_AREA_ORDER = ["routing", "zone", "nat", "security", "profile", "url", "review"]
+_AREA_LABEL = {"routing": "route", "vpn": "VPN tunnel", "zone": "zone", "nat": "NAT rule",
+               "security": "security rule", "profile": "security profile", "url": "URL filtering"}
+_AREA_ORDER = ["routing", "vpn", "zone", "nat", "security", "profile", "url", "review"]
 
 
 def _slug(text: str) -> str:
@@ -139,12 +139,15 @@ class Planner:
 
     # -- routing / zones ----------------------------------------------------------
     def route_step(self, iv: Interval, vr: Optional[str], next_hop: Optional[str], label: str,
-                   discard: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+                   discard: Optional[str] = None, via_interface: Optional[str] = None,
+                   why: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         rt = self.p.routes
         vr = vr or (rt.vrs[0] if len(rt.vrs) == 1 else "<virtual-router>")
         iface = zone = None
         notes = []
-        if next_hop:
+        if via_interface:
+            iface, zone = via_interface, self.p.zone_of(via_interface)
+        elif next_hop:
             nh = try_target(next_hop)
             r = rt.lookup(vr, nh) if nh else None
             if r is not None and r.nexthop_type == "connected":
@@ -163,8 +166,9 @@ class Planner:
         path = (f"network logical-router {q(lr[0])} vrf {q(lr[1])} routing-table ip static-route" if lr
                 else f"network virtual-router {q(vr)} routing-table ip static-route")
         cmd = (f"set {path} {_slug('to-' + dest.replace('/', '_'))} destination {dest} "
-               f"interface {iface or '<egress-interface>'} nexthop ip-address {next_hop or '<next-hop-ip>'} metric 10")
-        why = f"the firewall has no usable route {label}"
+               f"interface {iface or '<egress-interface>'}"
+               + ("" if via_interface else f" nexthop ip-address {next_hop or '<next-hop-ip>'}") + " metric 10")
+        why = why or f"the firewall has no usable route {label}"
         if discard:
             why = f"traffic {label} hits the discard route {discard}"
             notes.append("a more specific static route wins over the discard summary, so the blackhole stays "
@@ -187,6 +191,22 @@ class Planner:
                          ["use an existing zone instead if the network belongs to one", "attach a zone protection "
                           "profile if this zone faces untrusted networks"]))
         return name
+
+    def vpn_steps(self, d: dict) -> None:
+        cmds = []
+        if d.get("tunnel_disabled"):
+            cmds.append(f"set network tunnel ipsec {q(d['tunnel'])} disabled no")
+        cmds += [f"set network ike gateway {q(g)} disabled no" for g in d.get("gateways_disabled", [])]
+        notes = ["the far end needs the mirror image: tunnel up and a route back to this side's network",
+                 f"after commit: test vpn ike-sa gateway {q((d.get('gateways') or ['<gateway>'])[0])}, then "
+                 f"show vpn ipsec-sa tunnel {q(d['tunnel'])}"]
+        if cmds:
+            self.add(FixStep("vpn", f"Enable IPsec tunnel '{d['tunnel']}' and its IKE gateway",
+                             "the tunnel that carries this traffic is disabled", cmds,
+                             ["check the peer address and pre-shared key still match the remote side"] + notes))
+        else:
+            self.add(FixStep("review", f"Check IPsec tunnel '{d['tunnel']}' is up", "it is enabled in config",
+                             [f"show vpn ipsec-sa tunnel {q(d['tunnel'])}"], notes))
 
     # -- NAT ---------------------------------------------------------------------
     def snat_steps(self, flow: Flow, t2: FlowTrace, fz: str, tz: str, egress_if: Optional[str]) -> None:
@@ -544,6 +564,23 @@ class Planner:
             changed = True
         elif t.egress_if and not t.to_zone:
             tz, changed = self.zone_step(t.egress_if), True
+        elif self.has("ROUTE_PRIVATE_VIA_DEFAULT"):
+            d = self.has("ROUTE_PRIVATE_VIA_DEFAULT")[0].data
+            if d.get("interface"):
+                net = try_target(d.get("network")) or flow.dst
+                egress_if, tz = self.route_step(net, t.vr, None, f"to {interval_str(net)} through the VPN",
+                                                via_interface=d["interface"],
+                                                why=f"{interval_str(flow.dst)} currently follows the default route "
+                                                    f"to the internet; IPsec tunnel '{d['tunnel']}' is the path "
+                                                    f"meant for it")
+                tz = tz or "<vpn-zone>"
+                self.vpn_steps(d)
+            else:
+                iface, zone = self.route_step(flow.dst, t.vr, self.h.next_hop, f"to {interval_str(flow.dst)}",
+                                              why=f"private {interval_str(flow.dst)} currently follows the default "
+                                                  f"route to the internet")
+                egress_if, tz = iface, zone or "<destination-zone>"
+            changed = True
         if self.has("NAT_DNAT_NO_ROUTE"):
             self.route_step(try_target(t.post_nat_dst) or flow.dst, t.vr, self.h.next_hop,
                             f"to the NAT target {t.post_nat_dst}")

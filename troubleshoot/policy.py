@@ -18,9 +18,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from core.parser import (_entries, _first_child_tag, _members, _names, _parse_interfaces, _parse_vrs, _text,
-                         _yes, load_config)
-from core.parser import Interface
+from core.parser import (_entries, _first_child_tag, _members, _names, _parse_gateways, _parse_interfaces,
+                         _parse_tunnels, _parse_vrs, _text, _yes, load_config)
+from core.parser import IkeGateway, Interface, IpsecTunnel
 
 from .objects import ObjectStore
 from .routing import RouteTable, routes_from_config
@@ -150,6 +150,8 @@ class PolicyConfig:
     custom_url_categories: Dict[str, List[str]] = field(default_factory=dict)
     routes: RouteTable = field(default_factory=RouteTable)
     dynamic_routing: List[str] = field(default_factory=list)      # VRs with BGP/OSPF enabled
+    ipsec_tunnels: List[IpsecTunnel] = field(default_factory=list)
+    ike_gateways: List[IkeGateway] = field(default_factory=list)
 
     # -- lookups --------------------------------------------------------------
     def zone_of(self, interface: Optional[str]) -> Optional[str]:
@@ -163,6 +165,17 @@ class PolicyConfig:
 
     def nat_rule(self, name: Optional[str]) -> Optional[NatRule]:
         return next((r for r in self.nat_rules if r.name == name), None)
+
+    def vpn_for(self, dst, src=None):
+        """IPsec tunnels whose proxy-ids cover *dst* (and *src* when given): [(tunnel, proxy-id name, remote)]."""
+        out = []
+        for t in self.ipsec_tunnels:
+            for pid in t.proxy_ids:
+                remote, local = self.store.address_value(pid.remote), self.store.address_value(pid.local)
+                if remote and remote[0] == dst[0] and remote[1] <= dst[1] and dst[2] <= remote[2] and (
+                        src is None or local is None or (local[1] <= src[1] and src[2] <= local[2])):
+                    out.append((t, pid.name, remote))
+        return out
 
     def effective_profiles(self, rule: SecurityRule) -> Dict[str, str]:
         """Return ``{profile type: profile name}`` for a rule, expanding its profile group."""
@@ -282,6 +295,8 @@ def policy_from_root(cfg: ET.Element, vsys: str = "vsys1", source: str = "") -> 
         vrs = _parse_vrs(net)
         pol.routes = routes_from_config(net, vrs, pol.interfaces, pol.store)
         pol.dynamic_routing = [v.name for v in vrs if v.bgp_enabled or v.ospf_enabled]
+        pol.ipsec_tunnels = _parse_tunnels(net)
+        pol.ike_gateways = _parse_gateways(net)
         for lr in _entries(net, "logical-router"):
             for vrf in _entries(lr, "vrf"):
                 if any(_text(vrf, f"{p}/enable") == "yes" for p in ("bgp", "ospf", "ospfv3")):

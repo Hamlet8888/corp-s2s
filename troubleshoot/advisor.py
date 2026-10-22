@@ -338,6 +338,9 @@ def audit_policy(policy: PolicyConfig, rule_name: Optional[str] = None) -> List[
                   f"Applications [{', '.join(r.application)}] are allowed on ANY port",
                   "set service to application-default so apps only run on their standard ports "
                   "(stops evasive apps tunnelling over non-standard ports)")
+            elif app_any and "application-default" in r.service:
+                A("MEDIUM", "BP_APP_ANY", "Allows any application (application-default only keeps each app on its "
+                  "standard ports)", "name the applications this rule is for (Policy Optimizer shows what it carries)")
             elif app_any:
                 A("MEDIUM", "BP_APP_ANY", f"Port-based rule: any application on {', '.join(r.service)}",
                   "convert to App-ID: name the applications and use application-default")
@@ -349,9 +352,6 @@ def audit_policy(policy: PolicyConfig, rule_name: Optional[str] = None) -> List[
             for c in app_port_conflicts(r, policy):
                 A(c.severity, "BP_APP_PORT_CONFLICT", c.message,
                   f"use application-default, or add {c.app_ports} to the service, or remove '{c.app}' from the rule")
-            if "application-default" in r.service and "any" in r.application:
-                A("LOW", "BP_APPDEFAULT_WITH_ANY", "application-default combined with application 'any'",
-                  "name the applications; with 'any', application-default gives no port control")
             profiles = policy.effective_profiles(r)
             if not profiles:
                 A("HIGH", "BP_NO_SECURITY_PROFILES", "Allowed traffic is not inspected (no security profiles)",
