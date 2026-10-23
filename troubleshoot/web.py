@@ -216,8 +216,10 @@ class Backend:
         hits = []
         for f in self.firewalls.values():
             probe.networks = f.networks()
-            if probe.covers(ip):
-                hits.append({"name": f.entry.name, "site": f.entry.site, "lab": f.entry.lab})
+            n = probe.match_len(ip)
+            if n >= 0:
+                hits.append({"name": f.entry.name, "site": f.entry.site, "lab": f.entry.lab, "prefix": n})
+        hits.sort(key=lambda m: -m["prefix"])        # the most specific network wins (a /24 beats a /8 summary)
         return {"device": ip, "matches": hits}
 
     @staticmethod

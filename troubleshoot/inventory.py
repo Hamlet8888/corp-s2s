@@ -65,18 +65,24 @@ class FirewallEntry:
     def label(self) -> str:
         return self.name + (f" · {self.site}" if self.site else "")
 
-    def covers(self, ip: str) -> bool:
+    def match_len(self, ip: str) -> int:
+        """Prefix length of the most specific listed network containing *ip*, or -1."""
         try:
             addr = ipaddress.ip_address(ip.split("/")[0])
         except ValueError:
-            return False
+            return -1
+        best = -1
         for n in self.networks:
             try:
-                if addr in ipaddress.ip_network(n, strict=False):
-                    return True
+                net = ipaddress.ip_network(n, strict=False)
             except ValueError:
                 continue
-        return False
+            if addr.version == net.version and addr in net:
+                best = max(best, net.prefixlen)
+        return best
+
+    def covers(self, ip: str) -> bool:
+        return self.match_len(ip) >= 0
 
 
 class InventoryError(ValueError):

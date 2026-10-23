@@ -235,6 +235,13 @@ class TestInventory(unittest.TestCase):
         self.assertTrue(fws[0].covers("10.10.20.15"))
         self.assertFalse(fws[1].covers("10.10.20.15"))
 
+    def test_most_specific_network_wins(self):
+        from troubleshoot.inventory import FirewallEntry
+        branch = FirewallEntry("BLR-FW-01", host="10.9.10.2", networks=["10.9.0.0/16", "10.0.0.0/8"])
+        lvd = FirewallEntry("LVD-FW-01", host="10.14.10.2", networks=["10.14.1.0/24"])
+        self.assertEqual((branch.match_len("10.14.1.21"), lvd.match_len("10.14.1.21")), (8, 24))
+        self.assertEqual(branch.match_len("192.168.1.1"), -1)
+
     def test_csv_and_validation(self):
         import tempfile
         from pathlib import Path
