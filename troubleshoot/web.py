@@ -251,6 +251,15 @@ def ha_state(client) -> str:
     return (root.findtext(".//local-info/state") or "").strip().lower()
 
 
+def _window(minutes: int) -> str:
+    """'the last hour', 'the last 15 minutes', 'the last 24 hours', 'the last 7 days'."""
+    if minutes % 1440 == 0 and minutes >= 2880:
+        return f"the last {minutes // 1440} days"
+    if minutes % 60 == 0:
+        return "the last hour" if minutes == 60 else f"the last {minutes // 60} hours"
+    return f"the last {minutes} minutes"
+
+
 def _label(f: "Firewall") -> str:
     return f"{f.entry.name} ({f.entry.site})" if f.entry.site else f.entry.name
 
@@ -496,7 +505,8 @@ class Backend:
             notes.append(f"Only the newest 500 {', '.join(capped)} log entries were checked on {f.entry.name}; pick "
                          f"a shorter time window for a complete picture.")
         if since:
-            notes.append(f"Logs checked since {since} (this computer's clock).")
+            minutes = _int(params, "minutes", 1, 7 * 24 * 60)
+            notes.append(f"Logs searched: {_window(minutes)}, from {since[11:16]} to now (this computer's clock).")
         return dict(base, answer=answer.to_dict(), _answer=answer, diagnosis=d.to_dict(), log_summary=log_summary(d),
                     report_id=rid, notes=notes, ha=ha, error=None)
 
