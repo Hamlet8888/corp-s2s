@@ -715,6 +715,13 @@ class AppServer(ThreadingHTTPServer):
         self.tls = tls
         self.token = secrets.token_urlsafe(24)
 
+    def handle_error(self, request, client_address):
+        """Browsers open spare connections and drop them unused: not worth a traceback."""
+        import sys
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
 
 def _is_loopback(host: str) -> bool:
     if host == "localhost":
