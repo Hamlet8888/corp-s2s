@@ -250,45 +250,45 @@ class TestInventory(unittest.TestCase):
                 if states[host] is None:
                     raise ConnectionError(f"{host} unreachable")
                 return mock.Mock(op=mock.Mock(return_value=state_xml(states[host])), host=host)
-            fw = Firewall(FirewallEntry("TKO-FW-01", host="10.18.10.11", ha_peer="10.18.10.12"), serve_args(demo=False))
+            fw = Firewall(FirewallEntry("EDGE-FW-01", host="10.70.10.11", ha_peer="10.70.10.12"), serve_args(demo=False))
             fw._make_client = make
             return fw._connect()[1]
 
-        self.assertEqual(connect({"10.18.10.11": "active", "10.18.10.12": "passive"}), "10.18.10.11")
-        self.assertEqual(connect({"10.18.10.11": "passive", "10.18.10.12": "active"}), "10.18.10.12")   # failed over
-        self.assertEqual(connect({"10.18.10.11": None, "10.18.10.12": "active"}), "10.18.10.12")        # primary down
-        self.assertEqual(connect({"10.18.10.11": "suspended", "10.18.10.12": None}), "10.18.10.11")    # only one answers
+        self.assertEqual(connect({"10.70.10.11": "active", "10.70.10.12": "passive"}), "10.70.10.11")
+        self.assertEqual(connect({"10.70.10.11": "passive", "10.70.10.12": "active"}), "10.70.10.12")   # failed over
+        self.assertEqual(connect({"10.70.10.11": None, "10.70.10.12": "active"}), "10.70.10.12")        # primary down
+        self.assertEqual(connect({"10.70.10.11": "suspended", "10.70.10.12": None}), "10.70.10.11")    # only one answers
         with self.assertRaises(ConnectionError):
-            connect({"10.18.10.11": None, "10.18.10.12": None})
+            connect({"10.70.10.11": None, "10.70.10.12": None})
 
     def test_check_runs_on_the_active_member(self):
         import xml.etree.ElementTree as ET
         from troubleshoot.inventory import FirewallEntry
         from troubleshoot.web import Firewall
 
-        def member(state, peer_ip="10.14.10.5", enabled="yes"):
+        def member(state, peer_ip="10.60.10.5", enabled="yes"):
             xml = (f"<response><result><enabled>{enabled}</enabled><group><local-info><state>{state}</state></local-info>"
                    f"<peer-info><state>x</state><mgmt-ip>{peer_ip}/24</mgmt-ip></peer-info></group></result></response>")
             return mock.Mock(op=mock.Mock(return_value=ET.fromstring(xml)))
 
         def run(local, partners, ha_peer=None, enabled="yes"):
-            fw = Firewall(FirewallEntry("LVD-FW-01", host="10.14.10.4", ha_peer=ha_peer), serve_args(demo=False))
+            fw = Firewall(FirewallEntry("WEST-DC-FW-01", host="10.60.10.4", ha_peer=ha_peer), serve_args(demo=False))
             fw.client = member(local, enabled=enabled)
             fw._make_client = lambda host: partners[host] if partners.get(host) else (_ for _ in ()).throw(OSError(host))
             return fw, fw.verify_active()
 
         fw, r = run("active", {})
-        self.assertEqual((r["level"], r["host"]), ("ok", "10.14.10.4"))
+        self.assertEqual((r["level"], r["host"]), ("ok", "10.60.10.4"))
         self.assertIsNone(run("active", {}, enabled="no")[1])                       # standalone: nothing to verify
         lab = Firewall(FirewallEntry("LAB", host="192.168.10.200", ha=False), serve_args(demo=False))
         lab.client = mock.Mock()
         self.assertIsNone(lab.verify_active())
         lab.client.op.assert_not_called()                                            # ha: false isn't even asked
-        fw, r = run("passive", {"10.14.10.5": member("active")})                    # peer found from the firewall
-        self.assertEqual((r["level"], fw.active_host), ("ok", "10.14.10.5"))
+        fw, r = run("passive", {"10.60.10.5": member("active")})                    # peer found from the firewall
+        self.assertEqual((r["level"], fw.active_host), ("ok", "10.60.10.5"))
         self.assertIn("ran on the active member", r["text"])
-        fw, r = run("passive", {"10.14.10.9": member("active")}, ha_peer="10.14.10.9")   # inventory ha_peer first
-        self.assertEqual(fw.active_host, "10.14.10.9")
+        fw, r = run("passive", {"10.60.10.9": member("active")}, ha_peer="10.60.10.9")   # inventory ha_peer first
+        self.assertEqual(fw.active_host, "10.60.10.9")
         fw, r = run("passive", {})                                                   # partner unreachable
         self.assertEqual(r["level"], "warn")
         self.assertIn("may be missing", r["text"])
@@ -299,8 +299,8 @@ class TestInventory(unittest.TestCase):
         from troubleshoot.inventory import FirewallEntry, InventoryError, load_inventory, to_yaml
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "fw.yaml"
-            p.write_text(to_yaml([FirewallEntry("TKO-FW-01", host="10.18.10.11", ha_peer="10.18.10.12")]))
-            self.assertEqual(load_inventory(p)[0].ha_peer, "10.18.10.12")
+            p.write_text(to_yaml([FirewallEntry("EDGE-FW-01", host="10.70.10.11", ha_peer="10.70.10.12")]))
+            self.assertEqual(load_inventory(p)[0].ha_peer, "10.70.10.12")
             p.write_text("firewalls:\n  - {name: X, host: 10.1.1.1, ha_peer: 'bad host'}\n")
             with self.assertRaises(InventoryError):
                 load_inventory(p)
@@ -313,45 +313,45 @@ class TestInventory(unittest.TestCase):
             return parse_ha(ET.fromstring(
                 f"<response status='success'><result><enabled>yes</enabled><group><mode>{mode}</mode>"
                 f"<local-info><state>{local}</state><state-sync>Complete</state-sync></local-info>"
-                f"<peer-info><conn-status>{conn}</conn-status><state>{peer}</state><mgmt-ip>10.14.10.5/24</mgmt-ip>"
+                f"<peer-info><conn-status>{conn}</conn-status><state>{peer}</state><mgmt-ip>10.60.10.5/24</mgmt-ip>"
                 f"<conn-ha1><conn-status>{ha1}</conn-status></conn-ha1><conn-ha2><conn-status>{ha2}</conn-status></conn-ha2>"
                 f"</peer-info><running-sync>{sync}</running-sync><running-sync-enabled>yes</running-sync-enabled>"
                 f"</group></result></response>"))
 
         off = parse_ha(ET.fromstring("<response><result><enabled>no</enabled></result></response>"))
-        self.assertEqual(ha().peer_ip, "10.14.10.5")
-        self.assertEqual(evaluate("LVD", ha()).level, "ok")
-        self.assertEqual(evaluate("LVD", ha(local="passive", peer="active")).level, "ok")
-        self.assertEqual(evaluate("LVD", ha(local="active-primary", peer="active-secondary", mode="Active-Active")).level, "ok")
-        self.assertEqual(evaluate("LVD", ha(sync="not synchronized")).level, "warn")
-        self.assertEqual(evaluate("LVD", ha(ha2="down")).level, "warn")
-        self.assertEqual(evaluate("LVD", ha(conn="down", peer="unknown")).level, "fail")
-        self.assertEqual(evaluate("LVD", ha(peer="suspended")).level, "fail")
-        self.assertIn("split brain", evaluate("LVD", ha(peer="active")).problems[0])
-        self.assertEqual(evaluate("OHI-DC", off, expected=False).level, "standalone")
-        self.assertEqual(evaluate("LVD", off, expected=True).level, "fail")
+        self.assertEqual(ha().peer_ip, "10.60.10.5")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha()).level, "ok")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(local="passive", peer="active")).level, "ok")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(local="active-primary", peer="active-secondary", mode="Active-Active")).level, "ok")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(sync="not synchronized")).level, "warn")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(ha2="down")).level, "warn")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(conn="down", peer="unknown")).level, "fail")
+        self.assertEqual(evaluate("WEST-DC-FW-01", ha(peer="suspended")).level, "fail")
+        self.assertIn("split brain", evaluate("WEST-DC-FW-01", ha(peer="active")).problems[0])
+        self.assertEqual(evaluate("CLOUD-FW-01", off, expected=False).level, "standalone")
+        self.assertEqual(evaluate("WEST-DC-FW-01", off, expected=True).level, "fail")
         self.assertEqual(evaluate("X", off).level, "warn")                       # not stated in the inventory
 
     def test_most_specific_network_wins(self):
         from troubleshoot.inventory import FirewallEntry
-        branch = FirewallEntry("BLR-FW-01", host="10.9.10.2", networks=["10.9.0.0/16", "10.0.0.0/8"])
-        lvd = FirewallEntry("LVD-FW-01", host="10.14.10.2", networks=["10.14.1.0/24"])
-        self.assertEqual((branch.match_len("10.14.1.21"), lvd.match_len("10.14.1.21")), (8, 24))
+        branch = FirewallEntry("EAST-FW-01", host="10.50.10.2", networks=["10.50.0.0/16", "10.0.0.0/8"])
+        west = FirewallEntry("WEST-DC-FW-01", host="10.60.10.2", networks=["10.60.1.0/24"])
+        self.assertEqual((branch.match_len("10.60.1.21"), west.match_len("10.60.1.21")), (8, 24))
         self.assertEqual(branch.match_len("192.168.1.1"), -1)
 
     def test_routes_to_other_sites_are_not_a_sites_own_network(self):
         from troubleshoot.inventory import drop_other_sites
-        self.assertEqual(drop_other_sites(["10.9.0.0/16", "10.14.0.0/16"], ["10.14.10.2"]), ["10.9.0.0/16"])
+        self.assertEqual(drop_other_sites(["10.50.0.0/16", "10.60.0.0/16"], ["10.60.10.2"]), ["10.50.0.0/16"])
 
     def test_site_prefix_from_management_ip(self):
         import tempfile
         from pathlib import Path
         from troubleshoot.inventory import from_configs
         xml = (DEMO_DIR / "branch-fw.xml").read_text().replace(
-            "<hostname>BRANCH-FW-01</hostname>", "<hostname>LVD-FW-01</hostname><ip-address>10.14.10.2</ip-address>")
+            "<hostname>BRANCH-FW-01</hostname>", "<hostname>WEST-DC-FW-01</hostname><ip-address>10.60.10.2</ip-address>")
         with tempfile.TemporaryDirectory() as d:
-            Path(d, "lvd.xml").write_text(xml)
-            self.assertEqual(from_configs(d, site_prefix=16)[0].networks, ["10.14.0.0/16"])
+            Path(d, "west.xml").write_text(xml)
+            self.assertEqual(from_configs(d, site_prefix=16)[0].networks, ["10.60.0.0/16"])
 
     def test_csv_and_validation(self):
         import tempfile
@@ -359,11 +359,11 @@ class TestInventory(unittest.TestCase):
         from troubleshoot.inventory import InventoryError, load_inventory
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "fw.csv")
-            p.write_text("name,host,site,networks,lab\nBLR-FW-01,10.9.10.2,\"Bangalore, India\",10.9.0.0/16,\n"
+            p.write_text("name,host,site,networks,lab\nEAST-FW-01,10.50.10.2,\"East office\",10.50.0.0/16,\n"
                          "LAB-TEST-FIREWALL,192.168.10.200,Lab,,yes\n")
             fws = load_inventory(p)
-            self.assertEqual((fws[0].host, fws[0].site, fws[1].lab), ("10.9.10.2", "Bangalore, India", True))
-            p.write_text("name,host\nBLR-FW-01,10.9.10.2\nblr-fw-01,10.9.10.3\n")
+            self.assertEqual((fws[0].host, fws[0].site, fws[1].lab), ("10.50.10.2", "East office", True))
+            p.write_text("name,host\nEAST-FW-01,10.50.10.2\neast-fw-01,10.50.10.3\n")
             with self.assertRaises(InventoryError):
                 load_inventory(p)                       # duplicate names
             p.write_text("name,host\nX,bad host;rm\n")
@@ -388,11 +388,11 @@ class TestInventory(unittest.TestCase):
         from pathlib import Path
         from troubleshoot.inventory import from_configs
         xml = (DEMO_DIR / "branch-fw.xml").read_text().replace(
-            "<hostname>BRANCH-FW-01</hostname>", "<hostname>BLR-FW-01</hostname><ip-address>10.9.10.2</ip-address>")
+            "<hostname>BRANCH-FW-01</hostname>", "<hostname>EAST-FW-01</hostname><ip-address>10.50.10.2</ip-address>")
         with tempfile.TemporaryDirectory() as d:
-            Path(d, "blr.xml").write_text(xml)
+            Path(d, "east.xml").write_text(xml)
             e = from_configs(d)[0]
-        self.assertEqual((e.name, e.host, e.config), ("BLR-FW-01", "10.9.10.2", None))
+        self.assertEqual((e.name, e.host, e.config), ("EAST-FW-01", "10.50.10.2", None))
 
 
 class TestWebInventory(WebTestBase):
