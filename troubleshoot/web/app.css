@@ -76,9 +76,9 @@ main { padding: 22px; max-width: 1180px; width: 100%; }
 input, select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
   width: 100%; min-width: 0; }
 input::placeholder { color: var(--muted); opacity: .8; }
-.check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.check input { width: auto; }
-.check.inline { align-self: end; padding-bottom: 10px; }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+label.check input { width: auto; }
+label.check.inline { align-self: end; padding-bottom: 10px; }
 details.more { margin-top: 4px; }
 details.more > summary { cursor: pointer; color: var(--blue); font-size: 14px; margin-bottom: 10px; }
 
@@ -157,6 +157,9 @@ details.sec > .body { padding: 0 18px 16px; }
 .cmd pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px 76px 12px 12px;
   margin: 6px 0 12px; overflow-x: auto; white-space: pre; }
 .cmd-title { margin-top: 14px; }
+.ha-line { margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 13px; }
+.ha-line.ok { background: var(--green-bg); color: var(--green); }
+.ha-line.warn { background: var(--amber-bg); color: var(--amber); }
 .cmd .copy { position: absolute; top: 6px; right: 6px; }
 .finding { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .finding:last-child { border-bottom: 0; }

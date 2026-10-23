@@ -360,7 +360,13 @@ read-only) and lists each one as healthy, degraded, failover not working, standa
 | HA off and nothing in the inventory | degraded, until you add `ha: false` |
 
 The member you list as `host` reports its peer's state too, so this works without `ha_peer`. Mark standalone
-firewalls (cloud instances, labs) with `ha: false`. When the page last found a pair unhealthy, connection checks
+firewalls (cloud instances, labs) with `ha: false`.
+
+**Every check confirms it's reading the active member.** Before reading logs, a connection check asks the firewall
+for its HA state. Active: the result shows a green "checked on the active member" line (also in the ticket text).
+Passive: the check moves to the partner, using `ha_peer` or else the peer address the firewall reports, and says so.
+If no active member answers, an amber line warns that recent logs may be missing; the verdict still holds because
+rules and routes are synchronized. Firewalls with HA off, or marked `ha: false`, skip this. When the page last found a pair unhealthy, connection checks
 through that firewall carry a note telling helpdesk to let the network team know.
 
 **One API account for every firewall.** Push the read-only admin (role with XML API *Operational Requests* + *Log*)

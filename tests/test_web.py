@@ -261,6 +261,38 @@ class TestInventory(unittest.TestCase):
         with self.assertRaises(ConnectionError):
             connect({"10.18.10.11": None, "10.18.10.12": None})
 
+    def test_check_runs_on_the_active_member(self):
+        import xml.etree.ElementTree as ET
+        from troubleshoot.inventory import FirewallEntry
+        from troubleshoot.web import Firewall
+
+        def member(state, peer_ip="10.14.10.5", enabled="yes"):
+            xml = (f"<response><result><enabled>{enabled}</enabled><group><local-info><state>{state}</state></local-info>"
+                   f"<peer-info><state>x</state><mgmt-ip>{peer_ip}/24</mgmt-ip></peer-info></group></result></response>")
+            return mock.Mock(op=mock.Mock(return_value=ET.fromstring(xml)))
+
+        def run(local, partners, ha_peer=None, enabled="yes"):
+            fw = Firewall(FirewallEntry("LVD-FW-01", host="10.14.10.4", ha_peer=ha_peer), serve_args(demo=False))
+            fw.client = member(local, enabled=enabled)
+            fw._make_client = lambda host: partners[host] if partners.get(host) else (_ for _ in ()).throw(OSError(host))
+            return fw, fw.verify_active()
+
+        fw, r = run("active", {})
+        self.assertEqual((r["level"], r["host"]), ("ok", "10.14.10.4"))
+        self.assertIsNone(run("active", {}, enabled="no")[1])                       # standalone: nothing to verify
+        lab = Firewall(FirewallEntry("LAB", host="192.168.10.200", ha=False), serve_args(demo=False))
+        lab.client = mock.Mock()
+        self.assertIsNone(lab.verify_active())
+        lab.client.op.assert_not_called()                                            # ha: false isn't even asked
+        fw, r = run("passive", {"10.14.10.5": member("active")})                    # peer found from the firewall
+        self.assertEqual((r["level"], fw.active_host), ("ok", "10.14.10.5"))
+        self.assertIn("ran on the active member", r["text"])
+        fw, r = run("passive", {"10.14.10.9": member("active")}, ha_peer="10.14.10.9")   # inventory ha_peer first
+        self.assertEqual(fw.active_host, "10.14.10.9")
+        fw, r = run("passive", {})                                                   # partner unreachable
+        self.assertEqual(r["level"], "warn")
+        self.assertIn("may be missing", r["text"])
+
     def test_ha_peer_round_trips_through_yaml(self):
         import tempfile
         from pathlib import Path

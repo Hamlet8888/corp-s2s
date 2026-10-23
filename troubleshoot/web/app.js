@@ -270,7 +270,9 @@ function renderAnswer(r) {
     r.notes.length ? h("div", { class: "notes" }, r.notes.join(" · ")) : null,
     r.hops.map((hp) => h("div", { class: "notes" },
       `${r.hops.length > 1 ? hp.name + ": " : ""}` + [hp.log_summary ? `logs checked: ${hp.log_summary}` : "",
-        ...hp.notes].filter(Boolean).join(" · "))));
+        ...hp.notes].filter(Boolean).join(" · "))),
+    r.hops.filter((hp) => hp.ha).map((hp) => h("div", { class: `ha-line ${hp.ha.level}` },
+      hp.ha.level === "ok" ? "✓ " : "⚠ ", hp.ha.text)));
 }
 
 const HOP_ICON = { allowed: "✓", blocked: "✕", check: "?", unknown: "?", bypass: "—" };

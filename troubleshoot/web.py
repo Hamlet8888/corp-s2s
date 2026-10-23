@@ -183,6 +183,42 @@ class Firewall:
             return HaHealth(e.name, "unknown", "Couldn't ask the firewall", [str(exc)[:300]])
         return evaluate(e.name, parse_ha(root), e.ha)
 
+    def verify_active(self) -> Optional[dict]:
+        """Before a check (caller holds the lock): make sure we're reading the active HA member.
+
+        Logs exist only on the member that passed the traffic, so a passive member is swapped for its
+        partner (``ha_peer``, else the peer address the firewall reports). None when HA is off or offline.
+        """
+        if self.mode != "live" or self.client is None or self.entry.ha is False:   # standalone: nothing to verify
+            return None
+        from .ha import ACTIVE_STATES, HA_COMMAND, parse_ha
+        name, host = self.entry.name, self.active_host or self.entry.host
+        try:
+            info = parse_ha(self.client.op(HA_COMMAND))
+        except Exception as exc:
+            return {"level": "warn", "text": f"HA: couldn't confirm whether {name} ({host}) is the active member: "
+                                             f"{str(exc)[:200]}"}
+        if not info.enabled:
+            return None
+        if info.local in ACTIVE_STATES:
+            return {"level": "ok", "host": host, "text": f"HA: checked on the active member of {name} ({host}); "
+                                                         f"its peer is {info.peer or 'unknown'}."}
+        for partner in dict.fromkeys(p for p in (self.entry.ha_peer, info.peer_ip) if p and p != host):
+            try:
+                client = self._make_client(partner)
+                state = parse_ha(client.op(HA_COMMAND)).local
+            except Exception:
+                continue
+            if state in ACTIVE_STATES:
+                self.client, self.active_host = client, partner
+                return {"level": "ok", "host": partner,
+                        "text": f"HA: {host} is {info.local or 'not active'}, so the check ran on the active member "
+                                f"of {name} ({partner})."}
+        return {"level": "warn", "host": host,
+                "text": f"HA: {name} at {host} is {info.local or 'not active'} and the active member couldn't be "
+                        f"reached. Rules and routes are synchronized, so the verdict holds, but recent logs live on "
+                        f"the active member and may be missing here."}
+
     def logs(self, target, peer, port, since, nlogs=500):
         """Live: query the firewall. Offline: the loaded files. Returns (entries, capped kinds)."""
         if self.mode != "live":
@@ -399,6 +435,9 @@ class Backend:
                                    direction, single=len(hops) == 1) for f, role in hops]
         overall = combine([{"name": r["name"], "site": r["site"], "role": r["role"], "answer": r.pop("_answer")}
                            for r in results], device_label, dest_label, port)
+        ha_lines = [r["ha"]["text"] for r in results if r.get("ha")]
+        if ha_lines:
+            overall.ticket_text = overall.ticket_text.rstrip("\n") + "\n" + "\n".join(ha_lines)
         for f, _ in hops:
             ha = self.ha_results.get(f.entry.name)
             if ha and ha["level"] in ("fail", "warn"):
@@ -430,6 +469,7 @@ class Backend:
             hints = Hints(*(self._addr(params, k) for k in ("next_hop", "return_next_hop", "dnat_to")))
         since = self._since(params)
         with f.lock:
+            ha = f.verify_active()
             target = parse_target(device_ip)
             peer = parse_target(dest.ip) if dest else None
             logs, capped = f.logs(target, peer, port, since)
@@ -458,7 +498,7 @@ class Backend:
         if since:
             notes.append(f"Logs checked since {since} (this computer's clock).")
         return dict(base, answer=answer.to_dict(), _answer=answer, diagnosis=d.to_dict(), log_summary=log_summary(d),
-                    report_id=rid, notes=notes, error=None)
+                    report_id=rid, notes=notes, ha=ha, error=None)
 
     def _addr(self, params: dict, key: str) -> Optional[str]:
         v = _text(params, key)

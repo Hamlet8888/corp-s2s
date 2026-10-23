@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 HA_COMMAND = "<show><high-availability><all></all></show>"
 CLI_COMMAND = "show high-availability all"
 
-_ACTIVE = ("active", "active-primary", "active-secondary")
+ACTIVE_STATES = ("active", "active-primary", "active-secondary")
 _BROKEN = ("suspended", "non-functional", "tentative", "initial", "unknown")
 
 
@@ -92,9 +92,9 @@ def evaluate(name: str, info: HaInfo, expected: Optional[bool] = None) -> HaHeal
         fail.append("It can't see its HA peer (peer connection down): if this member fails, nothing takes over.")
     elif info.peer in _BROKEN:
         fail.append(f"The peer is {info.peer}: it can't take over if this member fails.")
-    elif info.local in _ACTIVE and info.peer in _ACTIVE and "active-active" not in info.mode.replace(" ", "-"):
+    elif info.local in ACTIVE_STATES and info.peer in ACTIVE_STATES and "active-active" not in info.mode.replace(" ", "-"):
         fail.append("Both members say they are active (split brain): traffic and ARP may flap between them.")
-    elif info.local not in _ACTIVE and info.peer not in _ACTIVE:
+    elif info.local not in ACTIVE_STATES and info.peer not in ACTIVE_STATES:
         fail.append(f"Neither member is active ({info.local or '?'} / {info.peer or '?'}): no firewall is passing traffic.")
     if info.ha1 and info.ha1 != "up":
         fail.append(f"HA1 (control link) is {info.ha1}.")
