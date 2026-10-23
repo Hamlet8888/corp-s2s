@@ -39,6 +39,12 @@
                     <nexthop><ip-address>203.0.113.1</ip-address></nexthop>
                     <metric>10</metric>
                   </entry>
+                  <entry name="to-other-site">
+                    <destination>10.20.0.0/16</destination>
+                    <interface>ethernet1/8</interface>
+                    <nexthop><ip-address>10.255.0.2</ip-address></nexthop>
+                    <metric>10</metric>
+                  </entry>
                   <entry name="blackhole-rfc1918-172">
                     <destination>172.16.0.0/12</destination>
                     <nexthop><discard/></nexthop>
@@ -181,6 +187,15 @@
                   <application><member>any</member></application>
                   <service><member>tcp-8443</member></service>
                   <action>allow</action>
+                </entry>
+                <entry name="Users-to-Other-Site">
+                  <from><member>trust</member></from><to><member>wan</member></to>
+                  <source><member>N-Users</member></source><destination><member>10.0.0.0/8</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>PG-Strict</member></group></profile-setting>
                 </entry>
               </rules>
             </security>

@@ -116,6 +116,21 @@ a.btn { text-decoration: none; color: inherit; display: inline-block; }
 .escalate { display: inline-block; margin-top: 12px; background: var(--blue-bg); color: var(--blue); border-radius: 999px;
   padding: 4px 12px; font-size: 13px; font-weight: 600; }
 .notes { font-size: 12px; color: var(--muted); margin-top: 10px; }
+.path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 4px; }
+.hop { display: inline-flex; flex-direction: column; align-items: flex-start; text-align: left;
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; font-size: 13px;
+  background: var(--panel-2); line-height: 1.35; }
+.hop-top { display: flex; gap: 6px; align-items: baseline; }
+.hop-icon { font-weight: 800; }
+.hop-site { color: var(--muted); }
+.hop small { color: var(--muted); font-size: 11px; }
+.hop.allowed { border-color: var(--green); color: var(--green); }
+.hop.blocked { border-color: var(--red); color: var(--red); }
+.hop.check, .hop.unknown { border-color: var(--amber); color: var(--amber); }
+.hop.bypass { border-style: dashed; color: var(--muted); }
+.hop b { color: var(--fg); }
+.arrow { color: var(--muted); font-size: 18px; }
+.hop-title { display: flex; gap: 10px; align-items: center; margin: 22px 0 10px; }
 
 /* technical sections */
 details.sec { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; }

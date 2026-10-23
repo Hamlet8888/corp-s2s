@@ -120,7 +120,7 @@ async function loadFirewalls() {
     const isLab = (g) => (g.startsWith("Test") ? 1 : 0);
     const order = Object.keys(groups).sort((a, b) => isLab(a) - isLab(b) || a.localeCompare(b));
     const opts = [];
-    if (FIREWALLS.length > 1) opts.push(h("option", { value: "" }, "Pick a firewall…"));
+    if (FIREWALLS.length > 1) opts.push(h("option", { value: "auto" }, "Automatic – from the IP addresses"));
     for (const g of order) {
       const items = groups[g].sort((a, b) => a.name.localeCompare(b.name)).map((f) =>
         h("option", { value: f.name }, f.name + (f.site ? ` · ${f.site}` : "") + (f.lab ? " (TEST – don't use)" : "")));
@@ -130,7 +130,7 @@ async function loadFirewalls() {
     sel.replaceChildren(...opts);
     const saved = store.get();
     const pick = FIREWALLS.length === 1 ? FIREWALLS[0].name
-      : saved && fwEntry(saved) && !fwEntry(saved).lab ? saved : "";
+      : saved && fwEntry(saved) && !fwEntry(saved).lab ? saved : "auto";
     sel.value = pick;
     await selectFirewall(pick);
   } catch (e) {
@@ -146,12 +146,22 @@ async function selectFirewall(name) {
     .forEach((sel) => $(sel).replaceChildren());
   $("#check-error").hidden = true;
   $("#fw-dot").className = "dot";
-  if (!FW) {
-    $("#fw-name").textContent = "";
-    banner("Pick the firewall for the user's site at the top, then check the connection.", "");
+  if (!FW) return;
+  store.set(FW);
+  if (FW === "auto") {
+    $("#fw-name").textContent = "picked from the IPs";
+    $("#fw-dot").className = "dot live";
+    banner("", "");
+    document.querySelectorAll("select.zones").forEach((sel) => sel.replaceChildren(h("option", { value: "" }, "automatic")));
+    const verify = $('#check-form [name="verify"]');
+    verify.disabled = false;
+    verify.checked = FIREWALLS.some((f) => f.mode === "live");
+    const visible = document.querySelector(".view:not([hidden])");
+    const view = visible ? visible.id.replace("view-", "") : "check";
+    if (loaders[view]) loaders[view]();
+    locate();
     return;
   }
-  store.set(FW);
   const entry = fwEntry(FW) || {};
   banner(entry.lab ? `${FW} is a TEST / LAB firewall` + (entry.note ? `: ${entry.note}` : "") +
     ". Don't use it for user checks." : "", entry.lab ? "lab" : "");
@@ -188,7 +198,7 @@ async function loadStatus() {
 
 $("#fw-select").addEventListener("change", (ev) => selectFirewall(ev.target.value));
 $("#refresh").addEventListener("click", async (ev) => {
-  if (!FW) return;
+  if (!FW || FW === "auto") return;
   ev.target.disabled = true;
   try { await api("/api/refresh", {}); Object.keys(cache).forEach((k) => delete cache[k]); await loadStatus(); }
   catch (e) { banner(`Refresh failed: ${e.message}`, "err"); }
@@ -201,10 +211,17 @@ async function locate() {
   const hint = $("#locate-hint");
   const device = $('#check-form [name="device"]').value.trim();
   hint.hidden = true;
-  if (!device || FIREWALLS.length < 2) return;
+  if (!device || FIREWALLS.length < 2 || !/^[0-9a-fA-F.:/]+$/.test(device)) return;
   try {
     const r = await api("/api/locate", { device });
     const m = r.matches.filter((x) => !x.lab);
+    if (FW === "auto") {
+      hint.className = m.length ? "hint ok" : "hint";
+      hint.replaceChildren(m.length ? `✓ ${device} is at ${m[0].name}${m[0].site ? ` (${m[0].site})` : ""}`
+        : `${device} isn't in any site's networks: pick the firewall at the top`);
+      hint.hidden = false;
+      return;
+    }
     if (!m.length) return;
     if (m.some((x) => x.name === FW)) {
       hint.className = "hint ok";
@@ -230,25 +247,72 @@ $('#check-form [name="device"]').addEventListener("input", () => {
 const ICON = { blocked: "✕", allowed: "✓", check: "?", unknown: "?" };
 const STATUS_WORD = { blocked: "Blocked", allowed: "Not blocked by the firewall", check: "Needs a closer look", unknown: "Unclear" };
 
+const reportUrl = (id) => `/api/report/${encodeURIComponent(id)}?t=${encodeURIComponent(TOKEN)}`;
+
 function renderAnswer(r) {
   const a = r.answer;
-  const card = h("div", { class: `card answer ${a.status}` },
+  const reports = r.hops.filter((hp) => hp.report_id);
+  return h("div", { class: `card answer ${a.status}` },
     h("div", { class: "answer-head" },
       h("div", { class: "badge-icon", "aria-hidden": "true" }, ICON[a.status] || "?"),
       h("div", {},
-        h("div", { class: "status" }, STATUS_WORD[a.status] || a.status),
+        h("div", { class: "status" }, r.bypass ? "Not a firewall issue" : (STATUS_WORD[a.status] || a.status)),
         h("div", { class: "headline" }, a.headline),
         h("div", {}, a.explanation))),
+    renderPath(r),
     h("h3", {}, "What to do next"),
-    h("ol", {}, a.next_steps.map((s) => h("li", {}, s))),
+    h("ol", {}, a.next_steps.map((x) => h("li", {}, x))),
     a.escalate_to ? h("span", { class: "escalate" }, `Escalate to the ${a.escalate_to}`) : null,
     h("div", { class: "btnrow" },
       copyButton(() => a.ticket_text, "Copy for ticket"),
-      h("a", { class: "btn small", href: `/api/report/${encodeURIComponent(r.report_id)}?t=${encodeURIComponent(TOKEN)}` },
-        "Download report")),
+      reports.map((hp) => h("a", { class: "btn small", href: reportUrl(hp.report_id) },
+        reports.length > 1 ? `Report: ${hp.name}` : "Download report"))),
     r.notes.length ? h("div", { class: "notes" }, r.notes.join(" · ")) : null,
-    h("div", { class: "notes" }, `Logs checked: ${r.log_summary}`));
-  return card;
+    r.hops.map((hp) => h("div", { class: "notes" },
+      `${r.hops.length > 1 ? hp.name + ": " : ""}` + [hp.log_summary ? `logs checked: ${hp.log_summary}` : "",
+        ...hp.notes].filter(Boolean).join(" · "))));
+}
+
+const HOP_ICON = { allowed: "✓", blocked: "✕", check: "?", unknown: "?", bypass: "—" };
+function hopBox(p, status, role) {
+  return h("span", { class: `hop ${status}` },
+    h("span", { class: "hop-top" }, h("span", { class: "hop-icon", "aria-hidden": "true" }, HOP_ICON[status] || "?"),
+      h("b", {}, p.name)),
+    p.site ? h("span", { class: "hop-site" }, p.site) : null,
+    h("small", {}, role));
+}
+function renderPath(r) {
+  if (r.bypass) {
+    const p = r.path[0];
+    return h("div", { class: "path" }, hopBox(p, "bypass", r.bypass.reason === "east-west"
+      ? `not involved: switched by the ${r.bypass.carried_by}` : "not involved: same network"));
+  }
+  if (r.path.length < 2 && !r.auto) return null;
+  const parts = [];
+  r.path.forEach((p, i) => {
+    if (i) parts.push(h("span", { class: "arrow", "aria-hidden": "true" }, "→"));
+    parts.push(hopBox(p, p.status, r.path.length > 1 ? p.role : "checked"));
+  });
+  return h("div", { class: "path", "aria-label": "Firewalls on the path" }, parts);
+}
+
+function renderHop(hp, multi) {
+  const title = (t) => (multi ? `${hp.name}: ${t}` : t);
+  if (!hp.diagnosis) {
+    return [h("div", { class: "error" }, `${hp.name}: ${hp.error || hp.answer.explanation}`)];
+  }
+  const d = hp.diagnosis;
+  const important = d.findings.filter((f) => f.severity !== "INFO");
+  return [
+    multi ? h("h2", { class: "hop-title" }, `${hp.name}${hp.site ? " · " + hp.site : ""} (${hp.role})`,
+      h("span", { class: `pill ${hp.answer.status === "allowed" ? "allow" : hp.answer.status === "blocked" ? "deny" : "alert"}` },
+        hp.answer.status)) : null,
+    section(title("What the firewall did, step by step"), false, renderFlows(d)),
+    section(title("For the network team: how to fix it"), false, renderPlans(d)),
+    section(title("Commands to confirm on the firewall"), false, renderCommands(d)),
+    section(title(`Technical findings (${important.length} important, ${d.findings.length} total)`), false,
+      renderFindings(d.findings)),
+  ].filter(Boolean);
 }
 
 function renderFlows(d) {
@@ -295,15 +359,7 @@ async function runCheck(params) {
   setBusy(true, $("#check-btn"), $("#check-busy"));
   try {
     const r = await api("/api/check", params);
-    const d = r.diagnosis;
-    const important = d.findings.filter((f) => f.severity !== "INFO");
-    out.append(
-      renderAnswer(r),
-      section("What the firewall did, step by step", false, renderFlows(d)),
-      section("For the network team: how to fix it", false, renderPlans(d)),
-      section("Commands to confirm on the firewall", false, renderCommands(d)),
-      section(`Technical findings (${important.length} important, ${d.findings.length} total)`, false,
-        renderFindings(d.findings)));
+    out.append(renderAnswer(r), ...r.hops.flatMap((hp) => renderHop(hp, r.hops.length > 1)));
   } catch (e) {
     showError(err, e);
   } finally {
@@ -386,7 +442,10 @@ $("#matrix-form").addEventListener("submit", async (ev) => {
 // ---------------------------------------------------------------------------
 async function once(key, path, el, render) {
   if (cache[key]) return;
-  if (!FW) { el.replaceChildren(h("div", { class: "card empty" }, "Pick a firewall at the top first.")); return; }
+  if (!FW || FW === "auto") {
+    el.replaceChildren(h("div", { class: "card empty" }, "Engineer pages work on one firewall: pick it at the top."));
+    return;
+  }
   el.replaceChildren(h("div", { class: "busy" }, h("span", { class: "spinner" }), "Loading…"));
   try { cache[key] = await api(path); el.replaceChildren(render(cache[key])); }
   catch (e) { el.replaceChildren(h("div", { class: "error" }, e.message)); }

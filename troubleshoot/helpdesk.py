@@ -258,3 +258,71 @@ def summarize(d: Diagnosis, device: str, dest: Optional[str] = None, port: Optio
         lines.append(f"Escalate to: {a.escalate_to}")
     a.ticket_text = "\n".join(lines)
     return a
+
+
+# ---------------------------------------------------------------------------
+# Paths through more than one firewall, and traffic that never reaches one
+# ---------------------------------------------------------------------------
+
+def _where(name: str, site: str) -> str:
+    return f"{name} ({site})" if site else name
+
+
+def bypass_answer(device: str, dest: str, firewall: str, site: str, reason: str, carried_by: str = "",
+                  network: str = "") -> HelpdeskAnswer:
+    """The traffic never passes the firewall: say so and point to what does carry it."""
+    where = site or firewall
+    if reason == "east-west":
+        headline = f"Not a firewall issue: this traffic stays inside {where} on the {carried_by or 'core switches'}"
+        why = (f"{device} and {dest} are both in {where}" + (f" ({network})" if network else "") + ". Traffic "
+               f"between them is switched by the {carried_by or 'core switches'} and never passes {firewall}, so the "
+               f"firewall can't block it and has no logs for it.")
+        steps = [f"Check that both {device} and {dest} are up and on the right VLAN/subnet.",
+                 f"Check access lists (ACLs) and routing (VRFs) on the {carried_by or 'core switches'}.",
+                 "Escalate to the network team (data center switching) with this note."]
+    else:
+        headline = "Not a firewall issue: both are on the same network"
+        why = (f"{device} and {dest} are on the same network" + (f" ({network})" if network else "") +
+               f", so they talk directly without passing {firewall}.")
+        steps = [f"Check that {dest} is up and the service is running.",
+                 f"Check the local firewall/antivirus on {dest} and {device}.",
+                 "Check the switch port / VLAN of both devices, or escalate to the network team."]
+    a = HelpdeskAnswer("allowed", headline, why, steps, NETWORK_TEAM)
+    a.ticket_text = "\n".join([f"Firewall check ({datetime.now():%Y-%m-%d %H:%M})",
+                               f"Device: {device}   Destination: {dest}",
+                               f"Result: NOT A FIREWALL ISSUE - {headline}", f"Why: {why}",
+                               f"Escalate to: {NETWORK_TEAM}"])
+    return a
+
+
+def combine(hops: List[dict], device: str, dest: Optional[str], port: Optional[int]) -> HelpdeskAnswer:
+    """One answer for a path through several firewalls. *hops* are dicts with name, site, role and answer."""
+    if len(hops) == 1:
+        return hops[0]["answer"]
+    rank = {"blocked": 0, "check": 1, "unknown": 2, "allowed": 3}
+    worst = min(hops, key=lambda h: rank.get(h["answer"].status, 2))
+    a = worst["answer"]
+    others = [h for h in hops if h is not worst]
+    where = _where(worst["name"], worst["site"])
+    to = f"{dest}" + (f" on port {port}" if port else "") if dest else "the destination"
+    if a.status == "allowed":
+        out = HelpdeskAnswer("allowed", "No firewall on the path is blocking this",
+                             f"Traffic from {device} to {to} passes "
+                             + " and ".join(_where(h['name'], h['site']) for h in hops) + "; neither blocks it.",
+                             a.next_steps, None)
+    else:
+        verdict = {"blocked": "Blocked", "check": "Needs a closer look", "unknown": "Unclear"}[a.status]
+        ok = [_where(h["name"], h["site"]) for h in others if h["answer"].status == "allowed"]
+        out = HelpdeskAnswer(a.status, f"{verdict} at {where}: {a.headline}",
+                             a.explanation + (f" ({', '.join(ok)} lets it through.)" if ok else ""),
+                             a.next_steps, a.escalate_to)
+    lines = [f"Firewall check ({datetime.now():%Y-%m-%d %H:%M})",
+             f"Device: {device}" + (f"   Destination: {to}" if dest else ""),
+             "Path: " + " -> ".join(f"{_where(h['name'], h['site'])} [{h['role']}]" for h in hops),
+             f"Result: {out.status.upper()} - {out.headline}"]
+    for h in hops:
+        lines.append(f"  {h['name']}: {h['answer'].status.upper()} - {h['answer'].headline}")
+    if out.escalate_to:
+        lines.append(f"Escalate to: {out.escalate_to}")
+    out.ticket_text = "\n".join(lines)
+    return out

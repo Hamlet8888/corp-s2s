@@ -166,7 +166,7 @@ class TestWebLocal(WebTestBase):
         data = json.loads(body)
         self.assertEqual(r.status, 200, data)
         self.assertEqual(data["answer"]["status"], "blocked")
-        r, html = self.req("GET", f"/api/report/{data['report_id']}?t={t}")
+        r, html = self.req("GET", f"/api/report/{data['hops'][0]['report_id']}?t={t}")
         self.assertEqual(r.status, 200)
         self.assertIn(b"Blocked by web filtering", html)
         self.assertIn("attachment", r.getheader("Content-Disposition"))
@@ -242,6 +242,20 @@ class TestInventory(unittest.TestCase):
         self.assertEqual((branch.match_len("10.14.1.21"), lvd.match_len("10.14.1.21")), (8, 24))
         self.assertEqual(branch.match_len("192.168.1.1"), -1)
 
+    def test_routes_to_other_sites_are_not_a_sites_own_network(self):
+        from troubleshoot.inventory import drop_other_sites
+        self.assertEqual(drop_other_sites(["10.9.0.0/16", "10.14.0.0/16"], ["10.14.10.2"]), ["10.9.0.0/16"])
+
+    def test_site_prefix_from_management_ip(self):
+        import tempfile
+        from pathlib import Path
+        from troubleshoot.inventory import from_configs
+        xml = (DEMO_DIR / "branch-fw.xml").read_text().replace(
+            "<hostname>BRANCH-FW-01</hostname>", "<hostname>LVD-FW-01</hostname><ip-address>10.14.10.2</ip-address>")
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "lvd.xml").write_text(xml)
+            self.assertEqual(from_configs(d, site_prefix=16)[0].networks, ["10.14.0.0/16"])
+
     def test_csv_and_validation(self):
         import tempfile
         from pathlib import Path
@@ -307,14 +321,46 @@ class TestWebInventory(WebTestBase):
         self.assertFalse(branch["loaded"])            # no test picks it, so it was never read
         self.assertTrue(next(f for f in data["firewalls"] if f["name"] == "LAB-TEST-FIREWALL")["lab"])
 
-    def test_firewall_must_be_picked_and_is_used(self):
-        t = self.token()
-        r, body = self.req("POST", "/api/check", {"device": "10.20.20.5"}, t)
-        self.assertEqual((r.status, json.loads(body)["error"]), (400, "pick a firewall first"))
-        r, body = self.req("POST", "/api/check", {"fw": "HQ-FW-01", "device": "10.20.20.5", "destination": "198.51.100.9",
-                                                 "port": "443"}, t)
+    def check(self, **params):
+        r, body = self.req("POST", "/api/check", params, self.token())
         data = json.loads(body)
-        self.assertEqual((r.status, data["firewall"]), (200, "HQ-FW-01"))
+        self.assertEqual(r.status, 200, data)
+        return data
+
+    def test_firewall_picked_from_the_device_ip(self):
+        data = self.check(device="10.20.20.5", destination="198.51.100.9", port="443")
+        self.assertEqual([h["name"] for h in data["hops"]], ["HQ-FW-01"])
+        self.assertIn("10.20.20.5 is in HQ-FW-01", data["notes"][0])
+        r, body = self.req("POST", "/api/check", {"device": "172.30.1.1", "destination": "198.51.100.9"}, self.token())
+        self.assertEqual(r.status, 400)
+        self.assertIn("isn't in any site", json.loads(body)["error"])
+
+    def test_path_between_two_sites(self):
+        data = self.check(device="10.10.20.15", destination="10.20.40.10", port="443", app="ssl")
+        self.assertEqual([(h["name"], h["role"]) for h in data["hops"]],
+                         [("BRANCH-FW-01", "source side"), ("HQ-FW-01", "destination side")])
+        self.assertEqual([p["status"] for p in data["path"]], ["allowed", "blocked"])
+        self.assertTrue(data["answer"]["headline"].startswith("Blocked at HQ-FW-01"))
+        self.assertIn("BRANCH-FW-01", data["answer"]["explanation"])            # "... lets it through"
+        self.assertIn("Path: BRANCH-FW-01", data["answer"]["ticket_text"])
+
+    def test_east_west_inside_a_nexus_site_skips_the_firewall(self):
+        data = self.check(device="10.20.20.5", destination="10.20.40.10", port="443")
+        self.assertEqual((data["hops"], data["bypass"]["reason"]), ([], "east-west"))
+        self.assertIn("Cisco Nexus", data["answer"]["headline"])
+        data = self.check(device="10.20.20.5", destination="10.20.50.10", port="443")   # DMZ: behind the firewall
+        self.assertEqual([h["name"] for h in data["hops"]], ["HQ-FW-01"])
+
+    def test_same_subnet_skips_the_firewall(self):
+        data = self.check(fw="BRANCH-FW-01", device="10.10.20.15", destination="10.10.20.99", port="445")
+        self.assertEqual(data["bypass"]["reason"], "same-subnet")
+
+    def test_manual_pick_overrides(self):
+        t = self.token()
+        r, body = self.req("POST", "/api/check", {"fw": "HQ-FW-01", "device": "10.10.20.15",
+                                                 "destination": "198.51.100.9", "port": "443"}, t)
+        data = json.loads(body)
+        self.assertEqual((r.status, [h["name"] for h in data["hops"]]), (200, ["HQ-FW-01"]))
         self.assertEqual(json.loads(self.req("GET", "/api/status?fw=HQ-FW-01", headers=t)[1])["hostname"], "HQ-FW-01")
         r, body = self.req("POST", "/api/check", {"fw": "NOPE", "device": "10.20.20.5"}, t)
         self.assertEqual(r.status, 400)
@@ -322,9 +368,9 @@ class TestWebInventory(WebTestBase):
     def test_lab_firewall_is_flagged_in_results(self):
         t = self.token()
         r, body = self.req("POST", "/api/check", {"fw": "LAB-TEST-FIREWALL", "device": "10.10.20.66"}, t)
-        self.assertIn("TEST/LAB", json.loads(body)["notes"][0])
+        self.assertIn("TEST/LAB", json.loads(body)["hops"][0]["notes"][0])
 
     def test_locate(self):
         t = self.token()
         data = json.loads(self.req("POST", "/api/locate", {"device": "10.20.30.7"}, t)[1])
-        self.assertEqual([m["name"] for m in data["matches"]], ["HQ-FW-01"])
+        self.assertEqual([m["name"] for m in data["matches"] if not m["lab"]], ["HQ-FW-01"])

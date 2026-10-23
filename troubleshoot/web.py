@@ -48,7 +48,8 @@ from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .engine import Troubleshooter, log_summary
-from .helpdesk import parse_destination, parse_device, summarize
+from .helpdesk import (NETWORK_TEAM, HelpdeskAnswer, bypass_answer, combine, parse_destination, parse_device,
+                       summarize)
 from .inventory import FirewallEntry, load_inventory
 from .inventory import to_dict as inventory_dict
 from .objects import parse_target
@@ -152,11 +153,12 @@ class Firewall:
         entries, raw = fetch_logs(self.client, target, peer, port, since, nlogs=nlogs)
         return entries, [k for k, el in raw.items() if len(el) >= nlogs]
 
-    def networks(self) -> List[str]:
+    def networks(self, other_hosts: Optional[List[str]] = None) -> List[str]:
+        """The site's address space: from the inventory, else derived from the loaded config."""
         if self.entry.networks or self.policy is None:
             return self.entry.networks
-        from .inventory import _internal_networks
-        return _internal_networks(self.policy)
+        from .inventory import _internal_networks, drop_other_sites
+        return drop_other_sites(_internal_networks(self.policy), other_hosts or [])
 
     def summary(self) -> dict:
         return dict(inventory_dict(self.entry), mode=self.mode, loaded=self.policy is not None,
@@ -166,6 +168,10 @@ class Firewall:
 # ---------------------------------------------------------------------------
 # Backend: the firewalls, recent reports and the API endpoints
 # ---------------------------------------------------------------------------
+
+def _label(f: "Firewall") -> str:
+    return f"{f.entry.name} ({f.entry.site})" if f.entry.site else f.entry.name
+
 
 class Backend:
     def __init__(self, args, entries: List[FirewallEntry]):
@@ -181,6 +187,19 @@ class Backend:
 
     def fw(self, params: dict) -> Firewall:
         name = params.get("fw") or (self.default if len(self.firewalls) == 1 else None)
+        if name == "auto" and len(self.firewalls) == 1:
+            name = next(iter(self.firewalls))
+        if name == "auto":                   # logs / matrix: the site of the device (or source) IP
+            raw = params.get("device") or params.get("source")
+            try:
+                ip = parse_device(raw)[0] if raw else None
+            except ValueError as exc:
+                raise UserError(str(exc)) from None
+            found = self._site_of(ip)[0] if ip else None
+            if found is None:
+                raise UserError("Automatic needs an IP that's in one site's networks: pick the firewall at the top")
+            found.ensure_loaded()
+            return found
         if not name:
             raise UserError("pick a firewall first")
         f = self.firewalls.get(str(name))
@@ -229,8 +248,72 @@ class Backend:
             return None
         return (datetime.now() - timedelta(minutes=minutes)).strftime("%Y/%m/%d %H:%M:%S")
 
+    # -- which firewall(s) a connection passes ----------------------------------------
+    def _site_of(self, ip: str):
+        """(firewall, prefix length, tied firewalls) for the most specific inventory network holding *ip*."""
+        probe = FirewallEntry(name="probe", host="x")
+        best, best_len = [], -1
+        hosts = [x.entry.host for x in self.firewalls.values() if x.entry.host]
+        for f in self.firewalls.values():
+            if f.entry.lab:
+                continue
+            probe.networks = f.networks([h for h in hosts if h != f.entry.host])
+            n = probe.match_len(ip)
+            if n > best_len:
+                best, best_len = [f], n
+            elif n == best_len and n >= 0:
+                best.append(f)
+        if best_len < 0:
+            return None, -1, []
+        return (best[0] if len(best) == 1 else None), best_len, best
+
+    def _bypass(self, f: Firewall, src: str, dst: str) -> Optional[dict]:
+        """Traffic that never reaches *f*: east-west inside a switched site, or two hosts on one subnet."""
+        e = f.entry
+        if e.east_west and e.covers(src) and e.covers(dst) and not (e.in_firewalled(src) or e.in_firewalled(dst)):
+            net = next((n for n in e.networks if FirewallEntry("p", host="x", networks=[n]).covers(src)
+                        and FirewallEntry("p", host="x", networks=[n]).covers(dst)), "")
+            return {"reason": "east-west", "carried_by": e.east_west, "network": net}
+        try:
+            f.ensure_loaded()
+        except Exception:
+            return None                  # unreachable: _check_one reports it
+        s, d = parse_target(src), parse_target(dst)
+        for routes in f.policy.routes.routes.values():
+            for r in routes:
+                if r.nexthop_type == "connected" and r.prefixlen < 31 and \
+                        r.destination[0] == s[0] == d[0] and r.destination[1] <= s[1] <= r.destination[2] \
+                        and r.destination[1] <= d[1] <= r.destination[2] and s[1] == s[2] and d[1] == d[2]:
+                    from .objects import interval_str
+                    return {"reason": "same-subnet", "carried_by": "", "network": interval_str(r.destination)}
+        return None
+
+    def _plan_hops(self, params: dict, src: str, dst: Optional[str]):
+        """[(firewall, role)] for this connection, and a note on how they were chosen."""
+        chosen = params.get("fw") or "auto"
+        if chosen != "auto" or len(self.firewalls) == 1:
+            f = self.fw(params if chosen != "auto" else {"fw": next(iter(self.firewalls))})
+            return [(f, "selected")], ""
+        s_fw, s_len, s_ties = self._site_of(src)
+        d_fw, d_len, d_ties = self._site_of(dst) if dst else (None, -1, [])
+        for ip, ties in ((src, s_ties), (dst, d_ties)):
+            if len(ties) > 1:
+                raise UserError(f"{ip} is in more than one site ({', '.join(t.entry.name for t in ties)}): pick the "
+                                f"firewall at the top")
+        if s_fw is None and d_fw is None:
+            raise UserError(f"Can't tell which firewall handles {src}" + (f" or {dst}" if dst else "")
+                            + ": it isn't in any site's networks in the inventory. Pick the firewall at the top.")
+        if s_fw is not None and s_fw is d_fw:
+            return [(s_fw, "both ends")], f"both addresses are in {_label(s_fw)}"
+        hops = []
+        if s_fw is not None:
+            hops.append((s_fw, "source side"))
+        if d_fw is not None:
+            hops.append((d_fw, "destination side"))
+        how = "; ".join(f"{ip} is in {_label(f)}" for ip, f in ((src, s_fw), (dst, d_fw)) if f is not None)
+        return hops, how
+
     def check(self, params: dict) -> dict:
-        f = self.fw(params)
         try:
             device_ip, device_note = parse_device(params.get("device", ""))
             port = _int(params, "port", 1, 65535)
@@ -244,11 +327,55 @@ class Backend:
         direction = params.get("direction") or "out"
         if direction not in ("out", "in"):
             raise UserError("direction must be 'out' or 'in'")
-        fz, tz = _text(params, "from_zone"), _text(params, "to_zone")
-        for z in (fz, tz):
-            if z and z not in f.policy.zones:
-                raise UserError(f"unknown zone {z!r} on {f.entry.name}")
-        hints = Hints(*(self._addr(params, k) for k in ("next_hop", "return_next_hop", "dnat_to")))
+        src, dst = (device_ip, dest.ip if dest else None) if direction == "out" else (dest.ip if dest else None,
+                                                                                     device_ip)
+        if src is None:
+            raise UserError("an inbound check needs the destination (the side that starts the connection)")
+        hops, how = self._plan_hops(params, src, dst)
+        device_label = params.get("device", "").strip() if device_note else device_ip
+        dest_label = dest.label if dest else None
+        notes = [n for n in (device_note, dest.note if dest else "") if n]
+        if how:
+            notes.insert(0, f"Firewall picked automatically: {how}.")
+
+        if dst and len(hops) == 1:
+            bypass = self._bypass(hops[0][0], src, dst)
+            if bypass:
+                f = hops[0][0]
+                ans = bypass_answer(device_label, dest_label or dst, f.entry.name, f.entry.site, bypass["reason"],
+                                    bypass["carried_by"], bypass["network"])
+                return {"answer": ans.to_dict(), "hops": [], "notes": notes, "bypass": bypass,
+                        "path": [{"name": f.entry.name, "site": f.entry.site, "role": "not involved",
+                                  "status": "bypass", "lab": f.entry.lab}]}
+
+        results = [self._check_one(f, role, params, device_ip, device_label, dest, dest_label, port, proto,
+                                   direction, single=len(hops) == 1) for f, role in hops]
+        overall = combine([{"name": r["name"], "site": r["site"], "role": r["role"], "answer": r.pop("_answer")}
+                           for r in results], device_label, dest_label, port)
+        return {"answer": overall.to_dict(), "hops": results, "notes": notes, "auto": bool(how),
+                "path": [{"name": r["name"], "site": r["site"], "role": r["role"], "status": r["answer"]["status"],
+                          "lab": r["lab"]} for r in results]}
+
+    def _check_one(self, f: Firewall, role: str, params: dict, device_ip: str, device_label: str, dest, dest_label,
+                   port, proto, direction: str, single: bool) -> dict:
+        base = {"name": f.entry.name, "site": f.entry.site, "role": role, "lab": f.entry.lab, "notes": []}
+        try:
+            f.ensure_loaded()
+        except Exception as exc:
+            ans = HelpdeskAnswer("unknown", f"Couldn't reach {f.entry.name}",
+                                 f"The checker couldn't read {f.entry.name}: {exc}",
+                                 ["Try again in a minute.", "If it keeps failing, escalate to the network team."],
+                                 NETWORK_TEAM)
+            return dict(base, answer=ans.to_dict(), _answer=ans, diagnosis=None, log_summary="", report_id=None,
+                        error=str(exc))
+        fz = tz = None
+        hints = Hints()
+        if single:                       # zone overrides and fix-plan hints only make sense for one firewall
+            fz, tz = _text(params, "from_zone"), _text(params, "to_zone")
+            for z in (fz, tz):
+                if z and z not in f.policy.zones:
+                    raise UserError(f"unknown zone {z!r} on {f.entry.name}")
+            hints = Hints(*(self._addr(params, k) for k in ("next_hop", "return_next_hop", "dnat_to")))
         since = self._since(params)
         with f.lock:
             target = parse_target(device_ip)
@@ -264,24 +391,22 @@ class Backend:
                             user=_text(params, "user"), url_category=_text(params, "url_category"), hints=hints)
         for k in capped:
             d.log_counts[k + "_capped"] = 1
-        device_label = params.get("device", "").strip() if device_note else device_ip
-        answer = summarize(d, device_label, dest.label if dest else None, port, firewall=f.entry.name,
-                           policy=f.policy)
+        answer = summarize(d, device_label, dest_label, port, firewall=f.entry.name, policy=f.policy)
         rid = secrets.token_urlsafe(12)
         with self.reports_lock:
             self.reports[rid] = render_html(d, f.policy, answer)
             while len(self.reports) > 50:
                 self.reports.popitem(last=False)
-        notes = [n for n in (device_note, dest.note if dest else "") if n]
+        notes = []
         if f.entry.lab:
-            notes.insert(0, f"{f.entry.name} is a TEST/LAB firewall" + (f": {f.entry.note}" if f.entry.note else ""))
+            notes.append(f"{f.entry.name} is a TEST/LAB firewall" + (f": {f.entry.note}" if f.entry.note else ""))
         if capped:
-            notes.append(f"Only the newest 500 {', '.join(capped)} log entries were checked; pick a shorter time "
-                         f"window for a complete picture.")
+            notes.append(f"Only the newest 500 {', '.join(capped)} log entries were checked on {f.entry.name}; pick "
+                         f"a shorter time window for a complete picture.")
         if since:
             notes.append(f"Logs checked since {since} (this computer's clock).")
-        return {"answer": answer.to_dict(), "diagnosis": d.to_dict(), "log_summary": log_summary(d),
-                "notes": notes, "report_id": rid, "firewall": f.entry.name}
+        return dict(base, answer=answer.to_dict(), _answer=answer, diagnosis=d.to_dict(), log_summary=log_summary(d),
+                    report_id=rid, notes=notes, error=None)
 
     def _addr(self, params: dict, key: str) -> Optional[str]:
         v = _text(params, key)

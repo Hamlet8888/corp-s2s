@@ -283,11 +283,22 @@ pan-troubleshoot serve --host 192.168.10.200 --insecure    # one firewall, on th
 pan-troubleshoot serve --inventory inventory/firewalls.yaml  # every site: pick the firewall from a drop-down
 ```
 
-**All sites in one drop-down.** With `--inventory`, the header gets a firewall picker (e.g. *BLR-FW-01 · Bangalore,
-India*). Each firewall's configuration is read the first time someone picks it, so startup is instant even with
-dozens of sites. If the inventory lists each site's internal `networks`, typing a device IP suggests the right
-firewall ("10.9.20.15 looks like it's at BLR-FW-01 – Switch"). Firewalls marked `lab: true` sit in a separate
-*Test / lab – don't use* section, are never pre-selected, and show a warning when picked.
+**All sites, picked automatically.** With `--inventory`, the firewall picker defaults to **Automatic – from the IP
+addresses**: each site's `networks` (e.g. LVD = 10.14.0.0/16, Bangalore = 10.9.0.0/16) tell the checker which
+firewall(s) a connection passes, and it checks those, so helpdesk only types the two addresses:
+
+| Device → destination | Checked |
+|---|---|
+| 10.9.20.15 (Bangalore) → 10.14.1.21 (LVD) | BLR-FW-01 *and* LVD-FW-01; the answer names the one that blocks ("Blocked at LVD-FW-01 …") and shows the path |
+| 10.14.1.21 → github.com | LVD-FW-01 only |
+| 10.14.1.21 → 10.14.35.20, at a site with `east_west: Cisco Nexus` | none: "Not a firewall issue: this traffic stays inside LVD on the Cisco Nexus", with what to check on the switches |
+| two hosts on the same subnet | none: "both are on the same network" |
+
+The most specific network wins (a site's /16 beats a branch's 10.0.0.0/8 summary route), an address matching two
+sites equally is refused rather than guessed, and helpdesk can still pick a firewall by hand. Each firewall's
+configuration is read the first time it's needed, so startup is instant even with dozens of sites. Firewalls marked
+`lab: true` sit in a separate *Test / lab – don't use* section, are never picked automatically or pre-selected, and
+show a warning when chosen.
 
 ```yaml
 # inventory/firewalls.yaml  (git-ignored)
@@ -296,7 +307,13 @@ firewalls:
     host: 10.9.10.2               # management IP
     site: Bangalore, India
     group: APAC                   # optional: groups the drop-down
-    networks: [10.9.0.0/16]       # optional: enables the "this device is at..." suggestion
+    networks: [10.9.0.0/16]       # the site's address space: picks this firewall for these IPs
+  - name: LVD-FW-01
+    host: 10.14.10.2
+    site: Las Vegas Data Center
+    networks: [10.14.0.0/16]
+    east_west: Cisco Nexus        # traffic inside the site is switched, not firewalled
+    firewalled_networks: [10.14.200.0/24]   # optional: parts of the site that DO sit behind the firewall
   - name: LAB-TEST-FIREWALL
     host: 192.168.10.200
     lab: true
@@ -307,12 +324,16 @@ You don't have to type it. Generate it from the config exports you already keep 
 hostname, management IP and internal networks are written: no secrets), or from Panorama:
 
 ```bash
-pan-troubleshoot inventory --from-configs ~/path/to/"All Firewall Configs" --filter 'FW-01$' --output inventory/firewalls.yaml
+pan-troubleshoot inventory --from-configs ~/path/to/"All Firewall Configs" --filter 'FW-01$' --site-prefix 16 --output inventory/firewalls.yaml
 pan-troubleshoot inventory --panorama panorama.corp.example --filter 'FW-01$' --output inventory/firewalls.yaml
 ```
 
-`--filter 'FW-01$'` keeps the primary of each HA pair. Then fill in `site` (and `group`), add any lab firewalls by
-hand, and start `serve --inventory`. CSV works too (`name,host,site,group,networks,lab,note`).
+`--filter 'FW-01$'` keeps the primary of each HA pair. `--site-prefix 16` is for address plans where each site is
+one /16 that contains its firewall's management IP (BLR-FW-01 = 10.9.10.2, so 10.9.0.0/16). Without it, the networks
+come from the config (connected subnets and static routes to private space), minus routes that lead to another
+firewall's site. Then fill in `site` (and `group`), add `east_west:` for sites whose internal traffic is switched
+(e.g. Nexus data centers), add any lab firewalls by hand, and start `serve --inventory`. CSV works too
+(`name,host,site,group,networks,lab,note,east_west,firewalled_networks`).
 
 **One API account for every firewall.** Push the read-only admin (role with XML API *Operational Requests* + *Log*)
 to all firewalls from a Panorama template, and give the server `PANOS_USERNAME` and `PANOS_PASSWORD`: it logs in to
@@ -407,7 +428,7 @@ On PAN-OS with Advanced Routing enabled, the live route table isn't parsed yet, 
 python3 -m unittest discover -s tests -t .
 ```
 
-123 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
+130 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
 redaction), the seven demo drift scenarios, planner symmetry, allocation and idempotency, brace parsing, and
 CLI gates, including a run that fails if anything touches the network. For pan-troubleshoot: every demo
 scenario, object/route resolution, CSV/XML log parsing, the fix planner (route/zone/NAT/security/profile

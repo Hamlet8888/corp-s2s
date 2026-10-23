@@ -10,7 +10,13 @@ The inventory is a small YAML or CSV file kept out of git (``inventory/`` is ign
         host: 10.9.10.2            # management IP or name
         site: Bangalore, India     # optional, shown next to the name
         group: APAC                # optional, groups the drop-down
-        networks: [10.9.0.0/16]    # optional: lets the app suggest the firewall for a device IP
+        networks: [10.9.0.0/16]    # the site's address space: the app picks this firewall for these IPs
+      - name: LVD-FW-01
+        host: 10.14.10.2
+        site: Las Vegas Data Center
+        networks: [10.14.0.0/16]
+        east_west: Cisco Nexus     # traffic inside the site is switched by the Nexus, not this firewall
+        firewalled_networks: [10.14.200.0/24]   # optional: parts of the site that DO sit behind the firewall
       - name: LAB-TEST-FIREWALL
         host: 192.168.10.200
         lab: true                  # listed separately as "test / lab - don't use"
@@ -18,7 +24,8 @@ The inventory is a small YAML or CSV file kept out of git (``inventory/`` is ign
       - name: OFFLINE-FW
         config: exports/fw.xml     # offline: a saved config (and optional logs: [...])
 
-CSV works too, with a header row: ``name,host,site,group,networks,lab,note`` (networks separated by spaces).
+CSV works too, with a header row: ``name,host,site,group,networks,lab,note,east_west,firewalled_networks``
+(lists separated by spaces).
 
 It can be generated instead of typed:
 
@@ -60,6 +67,12 @@ class FirewallEntry:
     insecure: bool = False
     lab: bool = False                   # test/lab firewall: shown separately, never the default
     note: str = ""                      # shown to users when they pick it
+    east_west: str = ""                 # e.g. "Cisco Nexus": traffic inside the site doesn't pass this firewall
+    firewalled_networks: List[str] = field(default_factory=list)   # exceptions inside such a site
+
+    def in_firewalled(self, ip: str) -> bool:
+        probe = FirewallEntry(self.name, host="x", networks=self.firewalled_networks)
+        return probe.covers(ip)
 
     @property
     def label(self) -> str:
@@ -115,7 +128,8 @@ def _entry(raw: dict, defaults: dict, base: Path, where: str) -> FirewallEntry:
         raise InventoryError(f"{where}: {name} needs 'host' (live) or 'config' (offline)")
     resolve = lambda p: str((base / p).expanduser()) if not Path(p).expanduser().is_absolute() else str(Path(p).expanduser())  # noqa: E731
     networks = _as_list(d.get("networks"))
-    for n in networks:
+    firewalled = _as_list(d.get("firewalled_networks"))
+    for n in networks + firewalled:
         try:
             ipaddress.ip_network(n, strict=False)
         except ValueError:
@@ -126,7 +140,8 @@ def _entry(raw: dict, defaults: dict, base: Path, where: str) -> FirewallEntry:
         logs=[resolve(p) for p in _as_list(d.get("logs"))], serial=str(d["serial"]) if d.get("serial") else None,
         vsys=str(d.get("vsys") or "vsys1"),
         ca_bundle=resolve(d["ca_bundle"]) if d.get("ca_bundle") else None, insecure=_yes(d.get("insecure", False)),
-        lab=_yes(d.get("lab", False)), note=str(d.get("note", "")).strip()[:200])
+        lab=_yes(d.get("lab", False)), note=str(d.get("note", "")).strip()[:200],
+        east_west=str(d.get("east_west", "")).strip()[:64], firewalled_networks=firewalled)
 
 
 def load_inventory(path) -> List[FirewallEntry]:
@@ -181,8 +196,30 @@ def _internal_networks(policy) -> List[str]:
     return out
 
 
-def from_configs(folder, name_filter: Optional[str] = None) -> List[FirewallEntry]:
-    """Read every firewall config export in *folder* (recursively) and return inventory entries."""
+def drop_other_sites(networks: List[str], other_hosts: List[str]) -> List[str]:
+    """Remove networks that contain another firewall's management IP: those are routes to other sites
+    (a branch's static route to the data center), not the firewall's own address space."""
+    others = []
+    for h in other_hosts:
+        try:
+            others.append(ipaddress.ip_address(h))
+        except (ValueError, TypeError):
+            continue
+    keep = []
+    for n in networks:
+        net = ipaddress.ip_network(n, strict=False)
+        if not any(o.version == net.version and o in net for o in others):
+            keep.append(n)
+    return keep
+
+
+def from_configs(folder, name_filter: Optional[str] = None, site_prefix: Optional[int] = None) -> List[FirewallEntry]:
+    """Read every firewall config export in *folder* (recursively) and return inventory entries.
+
+    *site_prefix* (e.g. 16) is for address plans where each site owns one block that also holds the
+    firewall's management IP: the site's network is then management-IP/prefix (10.9.10.2 -> 10.9.0.0/16)
+    instead of the subnets and routes found in the config.
+    """
     from .policy import policy_from_root
     rx = re.compile(name_filter, re.I) if name_filter else None
     found = {}
@@ -201,16 +238,27 @@ def from_configs(folder, name_filter: Optional[str] = None) -> List[FirewallEntr
         host = _text(system, "ip-address")
         if not name or (rx and not rx.search(name)):
             continue
-        try:
-            vsys = next((v.get("name") for v in _entries(dev, "vsys")), "vsys1") or "vsys1"
-            networks = _internal_networks(policy_from_root(cfg, vsys=vsys, source=str(p)))
-        except Exception:
-            networks = []
+        networks: List[str] = []
+        if site_prefix and host:
+            try:
+                networks = [str(ipaddress.ip_network(f"{host}/{site_prefix}", strict=False))]
+            except ValueError:
+                networks = []
+        if not networks:
+            try:
+                vsys = next((v.get("name") for v in _entries(dev, "vsys")), "vsys1") or "vsys1"
+                networks = _internal_networks(policy_from_root(cfg, vsys=vsys, source=str(p)))
+            except Exception:
+                networks = []
         mtime = p.stat().st_mtime
         if name not in found or mtime > found[name][1]:      # newest export wins
             found[name] = (FirewallEntry(name=name, host=host, networks=networks,
                                          config=None if host else str(p.resolve())), mtime)
-    return [e for e, _ in sorted(found.values(), key=lambda x: x[0].name)]
+    entries = [e for e, _ in sorted(found.values(), key=lambda x: x[0].name)]
+    if not site_prefix:
+        for e in entries:
+            e.networks = drop_other_sites(e.networks, [o.host for o in entries if o is not e and o.host])
+    return entries
 
 
 def from_panorama(client, name_filter: Optional[str] = None) -> List[FirewallEntry]:
@@ -250,6 +298,10 @@ def to_yaml(entries: List[FirewallEntry], note: str = "") -> str:
             lines.append(f"    serial: \"{e.serial}\"")
         if e.networks:
             lines.append(f"    networks: [{', '.join(e.networks)}]")
+        if e.east_west:
+            lines.append(f"    east_west: {q(e.east_west)}")
+        if e.firewalled_networks:
+            lines.append(f"    firewalled_networks: [{', '.join(e.firewalled_networks)}]")
         if e.lab:
             lines.append("    lab: true")
         if e.note:

@@ -319,7 +319,7 @@ def cmd_demo(args) -> int:
 def cmd_inventory(args) -> int:
     from .inventory import from_configs, from_panorama, to_yaml
     if args.from_configs:
-        entries = from_configs(args.from_configs, args.filter)
+        entries = from_configs(args.from_configs, args.filter, site_prefix=args.site_prefix)
         note = f"generated from config exports in {args.from_configs}"
     else:
         from core.api import PanosApiError
@@ -424,6 +424,9 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--from-configs", metavar="DIR", help="folder of firewall config exports (searched recursively)")
     g.add_argument("--panorama", metavar="HOST", help="ask Panorama for its connected firewalls")
     p.add_argument("--filter", metavar="REGEX", help="only firewall names matching this, e.g. 'FW-01$'")
+    p.add_argument("--site-prefix", type=int, metavar="N", choices=range(8, 31),
+                   help="each site is one /N block containing the firewall's management IP (e.g. 16: "
+                        "10.9.10.2 -> 10.9.0.0/16)")
     p.add_argument("--output", metavar="FILE", help="write to this file (mode 0600) instead of the screen")
     p.add_argument("--force", action="store_true", help="overwrite --output if it exists")
     p.add_argument("--username", help="Panorama API user if no PANOS_API_KEY is set")
