@@ -279,19 +279,57 @@ apps/ports matrix, rules/NAT/routes, security profiles and the best-practice aud
 
 ```bash
 pan-troubleshoot serve --demo                              # try it on fictional data: http://127.0.0.1:8080
-pan-troubleshoot serve --host 192.168.10.200 --insecure    # your firewall, on this computer only
+pan-troubleshoot serve --host 192.168.10.200 --insecure    # one firewall, on this computer only
+pan-troubleshoot serve --inventory inventory/firewalls.yaml  # every site: pick the firewall from a drop-down
 ```
+
+**All sites in one drop-down.** With `--inventory`, the header gets a firewall picker (e.g. *BLR-FW-01 · Bangalore,
+India*). Each firewall's configuration is read the first time someone picks it, so startup is instant even with
+dozens of sites. If the inventory lists each site's internal `networks`, typing a device IP suggests the right
+firewall ("10.9.20.15 looks like it's at BLR-FW-01 – Switch"). Firewalls marked `lab: true` sit in a separate
+*Test / lab – don't use* section, are never pre-selected, and show a warning when picked.
+
+```yaml
+# inventory/firewalls.yaml  (git-ignored)
+firewalls:
+  - name: BLR-FW-01
+    host: 10.9.10.2               # management IP
+    site: Bangalore, India
+    group: APAC                   # optional: groups the drop-down
+    networks: [10.9.0.0/16]       # optional: enables the "this device is at..." suggestion
+  - name: LAB-TEST-FIREWALL
+    host: 192.168.10.200
+    lab: true
+    note: Test firewall, not for helpdesk checks
+```
+
+You don't have to type it. Generate it from the config exports you already keep (read locally, and only the
+hostname, management IP and internal networks are written: no secrets), or from Panorama:
+
+```bash
+pan-troubleshoot inventory --from-configs ~/path/to/"All Firewall Configs" --filter 'FW-01$' --output inventory/firewalls.yaml
+pan-troubleshoot inventory --panorama panorama.corp.example --filter 'FW-01$' --output inventory/firewalls.yaml
+```
+
+`--filter 'FW-01$'` keeps the primary of each HA pair. Then fill in `site` (and `group`), add any lab firewalls by
+hand, and start `serve --inventory`. CSV works too (`name,host,site,group,networks,lab,note`).
+
+**One API account for every firewall.** Push the read-only admin (role with XML API *Operational Requests* + *Log*)
+to all firewalls from a Panorama template, and give the server `PANOS_USERNAME` and `PANOS_PASSWORD`: it logs in to
+each firewall the first time it's picked and keeps that key in memory only. Per-firewall keys
+(`PANOS_API_KEY_<HOST>`) or one shared `PANOS_API_KEY` work too.
 
 **Sharing it with the helpdesk.** Run it on one machine that can reach the firewall's management interface (a small
 VM or jump host). Staff only need a browser, a link and a password; the API key never leaves that machine.
 
-1. A read-only API admin on the firewall (XML API: *Operational Requests* and *Log* only) and its key in
-   `PANOS_API_KEY_<HOST>`.
+1. A read-only API admin on the firewalls (XML API: *Operational Requests* and *Log* only), with
+   `PANOS_USERNAME`/`PANOS_PASSWORD` (or per-firewall `PANOS_API_KEY_<HOST>`) in the service's environment, and the
+   inventory file.
 2. A TLS certificate for the server's name from your internal CA (`--tls-cert`/`--tls-key`), and a shared password
    (at least 12 characters) in `PT_WEB_PASSWORD`.
 3. Start it:
    ```bash
-   pan-troubleshoot serve --host fw01.corp.example --ca-bundle mgmt-ca.pem \
+   pan-troubleshoot serve --inventory /etc/fwcheck/firewalls.yaml --ca-bundle mgmt-ca.pem \
        --listen 0.0.0.0 --port 8443 --tls-cert fwcheck.pem --tls-key fwcheck.key --no-browser
    ```
    As a service, e.g. a systemd unit with `Environment=`/`EnvironmentFile=` (mode 0600) for the key and password,
@@ -319,6 +357,7 @@ time; and each check is logged to stderr with time, client, user name and query.
 | `troubleshoot/report.py` | Self-contained HTML report |
 | `troubleshoot/helpdesk.py` | Plain-language answers, escalation and ticket text; URL/hostname input parsing |
 | `troubleshoot/web.py`, `troubleshoot/web/` | Firewall Check web app (read-only API + browser front end) |
+| `troubleshoot/inventory.py` | Firewall list for the web app (YAML/CSV), generated from config exports or Panorama |
 | `troubleshoot/live.py` | Read-only live pulls and `test ...-match` cross-checks |
 
 Live mode uses `core/api.py` (POST only, key in a header, never logged, TLS verified), only issues reads, and
@@ -368,13 +407,13 @@ On PAN-OS with Advanced Routing enabled, the live route table isn't parsed yet, 
 python3 -m unittest discover -s tests -t .
 ```
 
-115 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
+123 offline tests. For corp-s2s: the API client against a fake transport (auth, locks, retries, commit jobs, backups, log
 redaction), the seven demo drift scenarios, planner symmetry, allocation and idempotency, brace parsing, and
 CLI gates, including a run that fails if anything touches the network. For pan-troubleshoot: every demo
 scenario, object/route resolution, CSV/XML log parsing, the fix planner (route/zone/NAT/security/profile
 combinations), verification commands, HTML escaping, the matrix, conflicts, audit, live verification against a
 fake API and brace-format configs; the helpdesk wording, input parsing, and the web app's
-API and security checks (page token, Host header, login, exposure rules).
+API and security checks (page token, Host header, login, exposure rules), and the multi-firewall inventory.
 
 ## Status / roadmap
 

@@ -316,6 +316,41 @@ def cmd_demo(args) -> int:
     return 0
 
 
+def cmd_inventory(args) -> int:
+    from .inventory import from_configs, from_panorama, to_yaml
+    if args.from_configs:
+        entries = from_configs(args.from_configs, args.filter)
+        note = f"generated from config exports in {args.from_configs}"
+    else:
+        from core.api import PanosApiError
+        try:
+            args.host = args.panorama
+            entries = from_panorama(_client(args), args.filter)
+        except PanosApiError as exc:
+            sys.exit(f"error: {exc}")
+        note = f"generated from Panorama {args.panorama}"
+    if not entries:
+        sys.exit("no firewalls found" + (f" matching --filter {args.filter!r}" if args.filter else ""))
+    text = to_yaml(entries, note)
+    if args.output:
+        out = Path(args.output).expanduser()
+        if out.exists() and not args.force:
+            sys.exit(f"{out} exists; pass --force to overwrite (or choose another --output)")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"wrote {len(entries)} firewall(s) to {out}: review it, fill in 'site', then "
+              f"run: pan-troubleshoot serve --inventory {out}", file=sys.stderr)
+    else:
+        print(text, end="")
+    missing = [e.name for e in entries if not e.host]
+    if missing:
+        print(f"note: no management IP in the config of {', '.join(missing)} (DHCP or not set); add 'host:' by hand",
+              file=sys.stderr)
+    return 0
+
+
 def _serve(args) -> int:
     from .web import cmd_serve
     if args.tls_cert and not args.tls_key:
@@ -370,7 +405,9 @@ def _parser() -> argparse.ArgumentParser:
                                    "PT_WEB_PASSWORD and use --listen with --tls-cert/--tls-key.")
     source(p, logs=True)
     p.add_argument("--logs", action="append", metavar="FILE", help="log files to use with --config")
-    p.add_argument("--demo", action="store_true", help="serve the fictional demo firewall")
+    p.add_argument("--demo", action="store_true", help="serve the fictional demo firewalls")
+    p.add_argument("--inventory", metavar="FILE",
+                   help="firewall list (YAML/CSV) for the drop-down; see 'pan-troubleshoot inventory'")
     w = p.add_argument_group("web server")
     w.add_argument("--listen", default="127.0.0.1", help="address to listen on (default 127.0.0.1: this computer only)")
     w.add_argument("--port", type=int, default=8080)
@@ -379,6 +416,20 @@ def _parser() -> argparse.ArgumentParser:
     w.add_argument("--allow-plain-http", action="store_true", help="allow HTTP on a network address (trusted LAN only)")
     w.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     p.set_defaults(func=_serve)
+
+    p = sub.add_parser("inventory", help="build the firewall list for 'serve' from config exports or Panorama",
+                       description="Writes a YAML inventory (name, management IP, internal networks). Configs are "
+                                   "read locally; only those fields are written.")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--from-configs", metavar="DIR", help="folder of firewall config exports (searched recursively)")
+    g.add_argument("--panorama", metavar="HOST", help="ask Panorama for its connected firewalls")
+    p.add_argument("--filter", metavar="REGEX", help="only firewall names matching this, e.g. 'FW-01$'")
+    p.add_argument("--output", metavar="FILE", help="write to this file (mode 0600) instead of the screen")
+    p.add_argument("--force", action="store_true", help="overwrite --output if it exists")
+    p.add_argument("--username", help="Panorama API user if no PANOS_API_KEY is set")
+    p.add_argument("--ca-bundle", metavar="PEM")
+    p.add_argument("--insecure", action="store_true")
+    p.set_defaults(func=cmd_inventory, host=None, serial=None)
 
     p = sub.add_parser("diagnose", help="diagnose an IP/subnet (read-only)")
     lv = source(p, logs=True)

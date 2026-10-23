@@ -3,14 +3,18 @@ Web app for pan-troubleshoot: a browser front end for helpdesk and network engin
 
     pan-troubleshoot serve --demo                                   # fictional data, http://127.0.0.1:8080
     pan-troubleshoot serve --host fw01.example.net --ca-bundle mgmt.pem
+    pan-troubleshoot serve --inventory inventory/firewalls.yaml     # all sites, picked from a drop-down
     PT_WEB_PASSWORD=... pan-troubleshoot serve --host fw01 --listen 0.0.0.0 --tls-cert cert.pem --tls-key key.pem
 
 Design
 ------
 * **Read-only.** It reuses the same engine as the CLI; nothing it does can change the firewall.
   Fix plans are shown as text for the network team.
-* **Secrets stay on the server.** The firewall API key is read from the environment of the
-  process (``PANOS_API_KEY_<HOST>``), exactly as in the CLI, and is never sent to a browser.
+* **Secrets stay on the server.** API keys come from the process environment
+  (``PANOS_API_KEY_<HOST>`` / ``PANOS_API_KEY``, or a keygen with ``PANOS_USERNAME`` and
+  ``PANOS_PASSWORD``) and are never sent to a browser.
+* **Many firewalls.** With an inventory, each firewall is read the first time someone picks it
+  and has its own lock, so a slow site doesn't hold up the others.
 * **Local by default.** It binds to 127.0.0.1. Listening on a network address requires a
   password (``PT_WEB_PASSWORD``, HTTP Basic) and TLS (``--tls-cert/--tls-key``), unless you
   explicitly pass ``--allow-plain-http`` on a trusted network.
@@ -40,11 +44,13 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .engine import Troubleshooter, log_summary
 from .helpdesk import parse_destination, parse_device, summarize
+from .inventory import FirewallEntry, load_inventory
+from .inventory import to_dict as inventory_dict
 from .objects import parse_target
 from .policy import PROFILE_TYPES, load_policy
 from .remediate import Hints
@@ -84,52 +90,61 @@ def _int(params: dict, key: str, lo: int, hi: int) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# Backend: holds the policy, the API client and recent reports
+# One firewall: its connection, cached config and lock
 # ---------------------------------------------------------------------------
 
-class Backend:
-    def __init__(self, args):
+class Firewall:
+    """A firewall from the inventory. Its config is read on first use and kept until Refresh."""
+
+    def __init__(self, entry: FirewallEntry, args):
+        self.entry = entry
         self.args = args
-        self.lock = threading.Lock()          # one firewall conversation at a time
+        self.lock = threading.Lock()          # one conversation with this firewall at a time
         self.client = None
         self.policy = None
         self.loaded_at: Optional[str] = None
+        self.error: Optional[str] = None
+        self.mode = "live" if entry.host and not entry.config else ("demo" if args.demo else "offline")
         self.offline_logs = []
-        self.reports: "OrderedDict[str, str]" = OrderedDict()
-        self.mode = "live" if args.host else ("demo" if args.demo else "offline")
-        if not args.host:
-            from .cli import _load_logs
-            self.offline_logs = _load_logs(args.logs)
-        self.refresh()
 
-    # -- data --------------------------------------------------------------------
+    def _make_client(self):
+        from core.api import PanosApiClient, PanosAuthError
+        e, a = self.entry, self.args
+        verify = e.ca_bundle or a.ca_bundle or (False if (e.insecure or a.insecure) else True)
+        user = a.username or os.environ.get("PANOS_USERNAME")
+        client = PanosApiClient(e.host, username=user, verify=verify)
+        if not client.has_key:
+            if not (user and os.environ.get("PANOS_PASSWORD")):
+                raise PanosAuthError(f"no API key for {e.name}: set PANOS_API_KEY_<HOST> or PANOS_API_KEY, or "
+                                     f"PANOS_USERNAME and PANOS_PASSWORD on the server", host=e.host)
+            client.generate_key()             # key kept in memory only
+        return client
+
+    def ensure_loaded(self) -> None:
+        if self.policy is None:
+            self.refresh()
+
     def refresh(self) -> None:
         with self.lock:
-            if self.args.host:
-                from .cli import _client
-                from .live import pull_config, pull_routes
-                if self.client is None:
-                    self.client = _client(self.args)
-                policy, _ = pull_config(self.client, vsys=self.args.vsys)
-                pull_routes(self.client, policy)
+            try:
+                if self.mode == "live":
+                    from .live import pull_config, pull_routes
+                    if self.client is None:
+                        self.client = self._make_client()
+                    policy, _ = pull_config(self.client, vsys=self.entry.vsys)
+                    pull_routes(self.client, policy)
+                else:
+                    from .cli import _load_logs
+                    policy = load_policy(self.entry.config, vsys=self.entry.vsys)
+                    self.offline_logs = _load_logs(self.entry.logs)
                 self.policy = policy
-            else:
-                self.policy = load_policy(self.args.config, vsys=self.args.vsys)
-            self.loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.error = None
+            except Exception as exc:
+                self.error = str(exc)
+                raise
 
-    def status(self) -> dict:
-        p = self.policy
-        return {"hostname": p.hostname, "source": p.source, "mode": self.mode, "vsys": p.vsys,
-                "loaded_at": self.loaded_at, "zones": sorted(p.zones), "rules": len(p.security_rules),
-                "nat_rules": len(p.nat_rules), "verify_available": self.mode == "live"}
-
-    def _since(self, params: dict) -> Optional[str]:
-        minutes = _int(params, "minutes", 1, 7 * 24 * 60)
-        if minutes is None:
-            return None
-        return (datetime.now() - timedelta(minutes=minutes)).strftime("%Y/%m/%d %H:%M:%S")
-
-    def _logs(self, target, peer, port, since, nlogs=500):
+    def logs(self, target, peer, port, since, nlogs=500):
         """Live: query the firewall. Offline: the loaded files. Returns (entries, capped kinds)."""
         if self.mode != "live":
             return list(self.offline_logs), []
@@ -137,8 +152,83 @@ class Backend:
         entries, raw = fetch_logs(self.client, target, peer, port, since, nlogs=nlogs)
         return entries, [k for k, el in raw.items() if len(el) >= nlogs]
 
+    def networks(self) -> List[str]:
+        if self.entry.networks or self.policy is None:
+            return self.entry.networks
+        from .inventory import _internal_networks
+        return _internal_networks(self.policy)
+
+    def summary(self) -> dict:
+        return dict(inventory_dict(self.entry), mode=self.mode, loaded=self.policy is not None,
+                    loaded_at=self.loaded_at, error=self.error)
+
+
+# ---------------------------------------------------------------------------
+# Backend: the firewalls, recent reports and the API endpoints
+# ---------------------------------------------------------------------------
+
+class Backend:
+    def __init__(self, args, entries: List[FirewallEntry]):
+        self.args = args
+        self.firewalls: "OrderedDict[str, Firewall]" = OrderedDict((e.name, Firewall(e, args)) for e in entries)
+        self.reports: "OrderedDict[str, str]" = OrderedDict()
+        self.reports_lock = threading.Lock()
+
+    @property
+    def default(self) -> Optional[str]:
+        """The first non-lab firewall (lab/test firewalls are never pre-selected)."""
+        return next((n for n, f in self.firewalls.items() if not f.entry.lab), None)
+
+    def fw(self, params: dict) -> Firewall:
+        name = params.get("fw") or (self.default if len(self.firewalls) == 1 else None)
+        if not name:
+            raise UserError("pick a firewall first")
+        f = self.firewalls.get(str(name))
+        if f is None:
+            raise UserError(f"unknown firewall {name!r}")
+        f.ensure_loaded()
+        return f
+
     # -- endpoints -----------------------------------------------------------------
+    def list_firewalls(self, params: dict) -> dict:
+        return {"firewalls": [f.summary() for f in self.firewalls.values()], "default": self.default}
+
+    def status(self, params: dict) -> dict:
+        f = self.fw(params)
+        p = f.policy
+        return dict(f.summary(), hostname=p.hostname, source=p.source, vsys=p.vsys, zones=sorted(p.zones),
+                    rules=len(p.security_rules), nat_rules=len(p.nat_rules), verify_available=f.mode == "live")
+
+    def refresh(self, params: dict) -> dict:
+        f = self.firewalls.get(str(params.get("fw") or self.default))
+        if f is None:
+            raise UserError("unknown firewall")
+        f.refresh()
+        return self.status({"fw": f.entry.name})
+
+    def locate(self, params: dict) -> dict:
+        """Which firewall(s) a device sits behind, from the inventory networks (and any loaded configs)."""
+        try:
+            ip, _ = parse_device(params.get("device", ""))
+        except ValueError as exc:
+            raise UserError(str(exc)) from None
+        probe = FirewallEntry(name="probe", host="x")
+        hits = []
+        for f in self.firewalls.values():
+            probe.networks = f.networks()
+            if probe.covers(ip):
+                hits.append({"name": f.entry.name, "site": f.entry.site, "lab": f.entry.lab})
+        return {"device": ip, "matches": hits}
+
+    @staticmethod
+    def _since(params: dict) -> Optional[str]:
+        minutes = _int(params, "minutes", 1, 7 * 24 * 60)
+        if minutes is None:
+            return None
+        return (datetime.now() - timedelta(minutes=minutes)).strftime("%Y/%m/%d %H:%M:%S")
+
     def check(self, params: dict) -> dict:
+        f = self.fw(params)
         try:
             device_ip, device_note = parse_device(params.get("device", ""))
             port = _int(params, "port", 1, 65535)
@@ -152,42 +242,44 @@ class Backend:
         direction = params.get("direction") or "out"
         if direction not in ("out", "in"):
             raise UserError("direction must be 'out' or 'in'")
-        zones = set(self.policy.zones)
         fz, tz = _text(params, "from_zone"), _text(params, "to_zone")
         for z in (fz, tz):
-            if z and z not in zones:
-                raise UserError(f"unknown zone {z!r}")
+            if z and z not in f.policy.zones:
+                raise UserError(f"unknown zone {z!r} on {f.entry.name}")
         hints = Hints(*(self._addr(params, k) for k in ("next_hop", "return_next_hop", "dnat_to")))
         since = self._since(params)
-        with self.lock:
+        with f.lock:
             target = parse_target(device_ip)
             peer = parse_target(dest.ip) if dest else None
-            logs, capped = self._logs(target, peer, port, since)
+            logs, capped = f.logs(target, peer, port, since)
             live = None
-            if params.get("verify") and self.mode == "live":
+            if params.get("verify") and f.mode == "live":
                 from .live import LiveVerifier
-                live = LiveVerifier(self.client, self.policy)
-            ts = Troubleshooter(self.policy, logs, live=live, logs_queried=self.mode == "live")
+                live = LiveVerifier(f.client, f.policy)
+            ts = Troubleshooter(f.policy, logs, live=live, logs_queried=f.mode == "live")
             d = ts.diagnose(device_ip, dest.ip if dest else None, port=port, proto=proto,
                             app=_text(params, "app"), direction=direction, from_zone=fz, to_zone=tz,
                             user=_text(params, "user"), url_category=_text(params, "url_category"), hints=hints)
         for k in capped:
             d.log_counts[k + "_capped"] = 1
         device_label = params.get("device", "").strip() if device_note else device_ip
-        answer = summarize(d, device_label, dest.label if dest else None, port, firewall=self.policy.hostname,
-                           policy=self.policy)
+        answer = summarize(d, device_label, dest.label if dest else None, port, firewall=f.entry.name,
+                           policy=f.policy)
         rid = secrets.token_urlsafe(12)
-        self.reports[rid] = render_html(d, self.policy, answer)
-        while len(self.reports) > 50:
-            self.reports.popitem(last=False)
+        with self.reports_lock:
+            self.reports[rid] = render_html(d, f.policy, answer)
+            while len(self.reports) > 50:
+                self.reports.popitem(last=False)
         notes = [n for n in (device_note, dest.note if dest else "") if n]
+        if f.entry.lab:
+            notes.insert(0, f"{f.entry.name} is a TEST/LAB firewall" + (f": {f.entry.note}" if f.entry.note else ""))
         if capped:
             notes.append(f"Only the newest 500 {', '.join(capped)} log entries were checked; pick a shorter time "
                          f"window for a complete picture.")
         if since:
             notes.append(f"Logs checked since {since} (this computer's clock).")
         return {"answer": answer.to_dict(), "diagnosis": d.to_dict(), "log_summary": log_summary(d),
-                "notes": notes, "report_id": rid}
+                "notes": notes, "report_id": rid, "firewall": f.entry.name}
 
     def _addr(self, params: dict, key: str) -> Optional[str]:
         v = _text(params, key)
@@ -200,28 +292,30 @@ class Backend:
 
     def matrix(self, params: dict) -> dict:
         from .advisor import build_matrix
+        f = self.fw(params)
         try:
             src, _ = parse_device(params.get("source", ""))
             dst = parse_destination(params.get("destination", "")).ip
         except ValueError as exc:
             raise UserError(str(exc)) from None
         pairs = [(src, dst)] + ([] if params.get("one_way") else [(dst, src)])
-        return {"matrices": [build_matrix(self.policy, s, t).to_dict() for s, t in pairs]}
+        return {"matrices": [build_matrix(f.policy, s, t).to_dict() for s, t in pairs]}
 
     def audit(self, params: dict) -> dict:
         from .advisor import audit_policy
-        items = audit_policy(self.policy)
+        p = self.fw(params).policy
+        items = audit_policy(p)
         counts = Counter(a.severity for a in items)
         flagged = {a.rule for a in items if a.rule and a.severity in ("HIGH", "MEDIUM")}
-        total = len(self.policy.security_rules) or 1
+        total = len(p.security_rules) or 1
         return {"items": [a.to_dict() for a in items], "counts": counts,
                 "score": round(100 * (1 - len(flagged) / total)),
                 "rules": [{"name": r.name, "label": r.label, "action": r.action,
                            "zones": f"{','.join(r.from_zones)} -> {','.join(r.to_zones)}"}
-                          for r in self.policy.security_rules]}
+                          for r in p.security_rules]}
 
     def rules(self, params: dict) -> dict:
-        p = self.policy
+        p = self.fw(params).policy
         sec = [dict(asdict(r), label=r.label, profiles_effective=p.effective_profiles(r)) for r in p.security_rules]
         dflt = [dict(asdict(r), label=r.label) for r in p.default_rules.values()]
         nat = [dict(asdict(r), label=r.label, translation=r.describe()) for r in p.nat_rules]
@@ -233,7 +327,7 @@ class Backend:
                 "zones": zones, "routes_live": p.routes.live}
 
     def profiles(self, params: dict) -> dict:
-        p = self.policy
+        p = self.fw(params).policy
         used: Dict[str, list] = {}
         for r in p.security_rules:
             if r.profile_group:
@@ -246,6 +340,7 @@ class Backend:
         return {"groups": groups, "rule_profiles": loose, "url_profiles": urls, "types": list(PROFILE_TYPES)}
 
     def logs(self, params: dict) -> dict:
+        f = self.fw(params)
         try:
             device_ip, _ = parse_device(params.get("device", ""))
             dest = parse_destination(params["destination"]) if params.get("destination") else None
@@ -257,8 +352,8 @@ class Backend:
             raise UserError("unknown log type")
         target = parse_target(device_ip)
         peer = parse_target(dest.ip) if dest else None
-        with self.lock:
-            entries, capped = self._logs(target, peer, port, self._since(params), nlogs=300)
+        with f.lock:
+            entries, capped = f.logs(target, peer, port, self._since(params), nlogs=300)
         rows = [e for e in entries if e.involves(target) and (peer is None or e.involves(peer))
                 and (port is None or e.dport == port)]
         if kind == "blocked":
@@ -373,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, html.encode(), "text/html; charset=utf-8",
                                   csp="default-src 'none'; style-src 'unsafe-inline'; img-src data:",
                                   extra={"Content-Disposition": 'attachment; filename="firewall-check.html"'})
-            params = {}
+            params = {k: v[0] for k, v in query.items() if k != "t"}
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
                 if n > MAX_BODY:
@@ -384,18 +479,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(params, dict):
                     return self._json(400, {"error": "expected a JSON object"})
             b = self.server.backend
-            routes = {("GET", "/api/status"): lambda: b.status(),
+            routes = {("GET", "/api/firewalls"): lambda: b.list_firewalls(params),
+                      ("GET", "/api/status"): lambda: b.status(params),
+                      ("POST", "/api/locate"): lambda: b.locate(params),
                       ("POST", "/api/check"): lambda: b.check(params),
                       ("POST", "/api/matrix"): lambda: b.matrix(params),
                       ("GET", "/api/audit"): lambda: b.audit(params),
                       ("GET", "/api/rules"): lambda: b.rules(params),
                       ("GET", "/api/profiles"): lambda: b.profiles(params),
                       ("POST", "/api/logs"): lambda: b.logs(params),
-                      ("POST", "/api/refresh"): lambda: (b.refresh(), b.status())[1]}
+                      ("POST", "/api/refresh"): lambda: b.refresh(params)}
             fn = routes.get((method, path))
             if fn is None:
                 return self._json(404, {"error": "unknown endpoint"})
-            if path not in ("/api/status",):
+            if path not in ("/api/status", "/api/firewalls", "/api/locate"):
                 self._audit(f"{path} {json.dumps({k: v for k, v in params.items() if v not in (None, '', False)})}")
             started = time.monotonic()
             result = fn()
@@ -433,6 +530,14 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _entries(args) -> List[FirewallEntry]:
+    if getattr(args, "inventory", None):
+        return load_inventory(args.inventory)
+    if args.host:
+        return [FirewallEntry(name=args.host, host=args.host, vsys=args.vsys)]
+    return [FirewallEntry(name=Path(args.config).stem, config=args.config, logs=list(args.logs or []), vsys=args.vsys)]
+
+
 def make_server(args) -> AppServer:
     """Validate the exposure settings, load the data and bind the socket."""
     password = os.environ.get("PT_WEB_PASSWORD") or None
@@ -445,7 +550,14 @@ def make_server(args) -> AppServer:
                              "(or --allow-plain-http on a trusted network)")
         if len(password) < 12:
             raise SystemExit("PT_WEB_PASSWORD must be at least 12 characters")
-    backend = Backend(args)
+    backend = Backend(args, _entries(args))
+    if args.host:                         # single firewall from the command line: connect now (may prompt)
+        from .cli import _client
+        only = next(iter(backend.firewalls.values()))
+        only.client = _client(args)
+        only.refresh()
+    elif not args.inventory:
+        next(iter(backend.firewalls.values())).refresh()
     srv = AppServer((args.listen, args.port), backend, password, tls)
     if tls:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -458,18 +570,26 @@ def make_server(args) -> AppServer:
 def cmd_serve(args) -> int:
     if args.demo:
         from .cli import DEMO_DIR
-        args.config = str(DEMO_DIR / "branch-fw.xml")
-        args.logs = [str(p) for p in sorted(DEMO_DIR.glob("*-logs.*"))]
-    elif not (args.host or args.config):
-        raise SystemExit("serve needs --demo, --config FILE or --host HOST")
+        args.inventory = str(DEMO_DIR / "firewalls.yaml")
+    elif not (args.host or args.config or getattr(args, "inventory", None)):
+        raise SystemExit("serve needs --inventory FILE, --host HOST, --config FILE or --demo")
+    if getattr(args, "inventory", None):
+        from .inventory import InventoryError
+        try:
+            n = len(load_inventory(args.inventory))
+        except (InventoryError, OSError) as exc:
+            raise SystemExit(f"inventory: {exc}")
+        print(f"inventory: {n} firewall(s) from {args.inventory}; each is read the first time someone picks it",
+              file=sys.stderr)
     if args.host:
         print(f"reading running config and routes from {args.host} (read-only) ...", file=sys.stderr)
     srv = make_server(args)
     scheme = "https" if srv.tls else "http"
     shown = "127.0.0.1" if args.listen in ("0.0.0.0", "::") else args.listen
     url = f"{scheme}://{shown}:{srv.server_address[1]}/"
-    b = srv.backend
-    print(f"Firewall Check is running for {b.policy.hostname or 'firewall'} ({b.mode}) at {url}", file=sys.stderr)
+    names = list(srv.backend.firewalls)
+    print(f"Firewall Check is running for {names[0] if len(names) == 1 else f'{len(names)} firewalls'} at {url}",
+          file=sys.stderr)
     print("read-only; press Ctrl+C to stop", file=sys.stderr)
     if not args.no_browser and _is_loopback(args.listen):
         import webbrowser

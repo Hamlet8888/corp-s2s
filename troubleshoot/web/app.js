@@ -20,12 +20,15 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+let FW = null;                 // name of the selected firewall
 async function api(path, body) {
   const opts = { headers: { "X-PT-Token": TOKEN } };
   if (body !== undefined) {
     opts.method = "POST";
     opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
+    opts.body = JSON.stringify(Object.assign({ fw: FW }, body));
+  } else if (FW && path !== "/api/firewalls") {
+    path += (path.includes("?") ? "&" : "?") + "fw=" + encodeURIComponent(FW);
   }
   const resp = await fetch(path, opts);
   let data = {};
@@ -85,32 +88,140 @@ function show(view) {
 document.querySelectorAll(".nav").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
 
 // ---------------------------------------------------------------------------
-// Status bar
+// Firewall picker and status
 // ---------------------------------------------------------------------------
 let STATUS = null;
-async function loadStatus() {
+let FIREWALLS = [];
+const store = {
+  get() { try { return localStorage.getItem("pt-fw"); } catch (e) { return null; } },
+  set(v) { try { localStorage.setItem("pt-fw", v); } catch (e) { /* private mode */ } },
+};
+const cache = {};
+
+function banner(text, kind) {
+  const b = $("#fw-banner");
+  b.hidden = !text;
+  b.className = `banner ${kind || ""}`;
+  b.textContent = text || "";
+}
+
+function fwEntry(name) { return FIREWALLS.find((f) => f.name === name); }
+
+async function loadFirewalls() {
   try {
-    STATUS = await api("/api/status");
-    $("#fw-dot").className = `dot ${STATUS.mode}`;
-    const mode = { live: "Live", demo: "Demo data", offline: "From a saved config" }[STATUS.mode];
-    $("#fw-name").textContent = `${STATUS.hostname || "firewall"} · ${mode} · loaded ${STATUS.loaded_at.slice(11, 16)}`;
-    document.querySelectorAll("select.zones").forEach((sel) => {
-      const keep = sel.value;
-      sel.replaceChildren(h("option", { value: "" }, "automatic"), ...STATUS.zones.map((z) => h("option", {}, z)));
-      sel.value = keep;
-    });
-    const verify = $('#check-form [name="verify"]');
-    verify.disabled = !STATUS.verify_available;
-    if (!STATUS.verify_available) verify.checked = false;
+    const r = await api("/api/firewalls");
+    FIREWALLS = r.firewalls;
+    const sel = $("#fw-select");
+    const groups = {};
+    for (const f of FIREWALLS) {
+      const g = f.lab ? "Test / lab – don't use" : (f.group || "Firewalls");
+      (groups[g] = groups[g] || []).push(f);
+    }
+    const isLab = (g) => (g.startsWith("Test") ? 1 : 0);
+    const order = Object.keys(groups).sort((a, b) => isLab(a) - isLab(b) || a.localeCompare(b));
+    const opts = [];
+    if (FIREWALLS.length > 1) opts.push(h("option", { value: "" }, "Pick a firewall…"));
+    for (const g of order) {
+      const items = groups[g].sort((a, b) => a.name.localeCompare(b.name)).map((f) =>
+        h("option", { value: f.name }, f.name + (f.site ? ` · ${f.site}` : "") + (f.lab ? " (TEST – don't use)" : "")));
+      if (order.length > 1 || g !== "Firewalls") opts.push(h("optgroup", { label: g }, items));
+      else opts.push(...items);
+    }
+    sel.replaceChildren(...opts);
+    const saved = store.get();
+    const pick = FIREWALLS.length === 1 ? FIREWALLS[0].name
+      : saved && fwEntry(saved) && !fwEntry(saved).lab ? saved : "";
+    sel.value = pick;
+    await selectFirewall(pick);
   } catch (e) {
-    $("#fw-name").textContent = `not connected: ${e.message}`;
+    banner(`Can't load the firewall list: ${e.message}`, "err");
   }
 }
+
+async function selectFirewall(name) {
+  FW = name || null;
+  STATUS = null;
+  Object.keys(cache).forEach((k) => delete cache[k]);
+  ["#check-result", "#logs-result", "#matrix-result", "#rules-result", "#profiles-result", "#audit-result"]
+    .forEach((sel) => $(sel).replaceChildren());
+  $("#check-error").hidden = true;
+  $("#fw-dot").className = "dot";
+  if (!FW) {
+    $("#fw-name").textContent = "";
+    banner("Pick the firewall for the user's site at the top, then check the connection.", "");
+    return;
+  }
+  store.set(FW);
+  const entry = fwEntry(FW) || {};
+  banner(entry.lab ? `${FW} is a TEST / LAB firewall` + (entry.note ? `: ${entry.note}` : "") +
+    ". Don't use it for user checks." : "", entry.lab ? "lab" : "");
+  await loadStatus();
+  const visible = document.querySelector(".view:not([hidden])");
+  const view = visible ? visible.id.replace("view-", "") : "check";
+  if (loaders[view]) loaders[view]();
+  locate();
+}
+
+async function loadStatus() {
+  const name = FW;
+  $("#fw-name").textContent = `connecting to ${name}…`;
+  try {
+    const st = await api("/api/status");
+    if (name !== FW) return;                     // the user switched while we were loading
+    STATUS = st;
+    $("#fw-dot").className = `dot ${st.mode}`;
+    const mode = { live: "Live", demo: "Demo data", offline: "Saved config" }[st.mode];
+    $("#fw-name").textContent = `${mode} · loaded ${st.loaded_at.slice(11, 16)}`;
+    document.querySelectorAll("select.zones").forEach((sel) => {
+      sel.replaceChildren(h("option", { value: "" }, "automatic"), ...st.zones.map((z) => h("option", {}, z)));
+    });
+    const verify = $('#check-form [name="verify"]');
+    verify.disabled = !st.verify_available;
+    verify.checked = st.verify_available;
+  } catch (e) {
+    if (name !== FW) return;
+    $("#fw-dot").className = "dot";
+    $("#fw-name").textContent = "not reachable";
+    banner(`Can't read ${name}: ${e.message}`, "err");
+  }
+}
+
+$("#fw-select").addEventListener("change", (ev) => selectFirewall(ev.target.value));
 $("#refresh").addEventListener("click", async (ev) => {
+  if (!FW) return;
   ev.target.disabled = true;
-  try { await api("/api/refresh", {}); await loadStatus(); Object.keys(cache).forEach((k) => delete cache[k]); }
-  catch (e) { alert(e.message); }
+  try { await api("/api/refresh", {}); Object.keys(cache).forEach((k) => delete cache[k]); await loadStatus(); }
+  catch (e) { banner(`Refresh failed: ${e.message}`, "err"); }
   ev.target.disabled = false;
+});
+
+// Suggest the right firewall for a device IP (from the inventory's networks)
+let locateTimer = null;
+async function locate() {
+  const hint = $("#locate-hint");
+  const device = $('#check-form [name="device"]').value.trim();
+  hint.hidden = true;
+  if (!device || FIREWALLS.length < 2) return;
+  try {
+    const r = await api("/api/locate", { device });
+    const m = r.matches.filter((x) => !x.lab);
+    if (!m.length) return;
+    if (m.some((x) => x.name === FW)) {
+      hint.className = "hint ok";
+      hint.replaceChildren(`✓ ${device} is on ${FW}'s network`);
+    } else {
+      hint.className = "hint";
+      hint.replaceChildren(`${device} looks like it's at ${m[0].name}${m[0].site ? ` (${m[0].site})` : ""}.`,
+        h("button", { class: "btn small", type: "button",
+          onclick: () => { $("#fw-select").value = m[0].name; selectFirewall(m[0].name); } }, `Switch to ${m[0].name}`));
+    }
+    hint.hidden = false;
+  } catch (e) { /* the hint is optional */ }
+}
+$('#check-form [name="device"]').addEventListener("input", () => {
+  clearTimeout(locateTimer);
+  $("#locate-hint").hidden = true;
+  locateTimer = setTimeout(locate, 500);
 });
 
 // ---------------------------------------------------------------------------
@@ -179,6 +290,7 @@ function renderFindings(findings) {
 async function runCheck(params) {
   const err = $("#check-error"), out = $("#check-result");
   err.hidden = true;
+  if (!FW) { showError(err, new Error("Pick a firewall at the top first.")); return; }
   out.replaceChildren();
   setBusy(true, $("#check-btn"), $("#check-busy"));
   try {
@@ -272,9 +384,9 @@ $("#matrix-form").addEventListener("submit", async (ev) => {
 // ---------------------------------------------------------------------------
 // Rules, profiles, audit (loaded once, refreshed with the Refresh button)
 // ---------------------------------------------------------------------------
-const cache = {};
 async function once(key, path, el, render) {
   if (cache[key]) return;
+  if (!FW) { el.replaceChildren(h("div", { class: "card empty" }, "Pick a firewall at the top first.")); return; }
   el.replaceChildren(h("div", { class: "busy" }, h("span", { class: "spinner" }), "Loading…"));
   try { cache[key] = await api(path); el.replaceChildren(render(cache[key])); }
   catch (e) { el.replaceChildren(h("div", { class: "error" }, e.message)); }
@@ -367,4 +479,4 @@ loaders.rules = () => once("rules", "/api/rules", $("#rules-result"), rulesView)
 loaders.profiles = () => once("profiles", "/api/profiles", $("#profiles-result"), profilesView);
 loaders.audit = () => once("audit", "/api/audit", $("#audit-result"), auditView);
 
-loadStatus();
+loadFirewalls();

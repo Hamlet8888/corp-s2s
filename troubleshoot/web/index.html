@@ -19,9 +19,11 @@
     </div>
   </div>
   <div class="fw">
+    <label for="fw-select" class="fw-label">Firewall</label>
+    <select id="fw-select" aria-label="Firewall to check"></select>
     <span id="fw-dot" class="dot"></span>
-    <span id="fw-name">connecting…</span>
-    <button id="refresh" class="btn ghost small" type="button" title="Reload the firewall configuration">Refresh</button>
+    <span id="fw-name"></span>
+    <button id="refresh" class="btn ghost small" type="button" title="Reload this firewall's configuration">Refresh</button>
   </div>
 </header>
 
@@ -39,6 +41,7 @@
   </nav>
 
   <main id="main">
+    <div id="fw-banner" class="banner" hidden></div>
     <!-- Check a connection -->
     <section class="view" id="view-check">
       <form class="card" id="check-form" autocomplete="off">
@@ -48,6 +51,7 @@
             <span>Device <em>required</em></span>
             <input name="device" required placeholder="e.g. 192.168.10.63 or LAPTOP-123">
             <small>The user's computer or phone (IP address or name).</small>
+            <div id="locate-hint" class="hint" hidden></div>
           </label>
           <label class="field">
             <span>Trying to reach</span>

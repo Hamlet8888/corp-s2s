@@ -99,7 +99,7 @@ class TestSummaries(unittest.TestCase):
 def serve_args(**kw):
     ns = argparse.Namespace(host=None, config=str(CFG), logs=[str(p) for p in LOGS], demo=True, vsys="vsys1",
                             username=None, serial=None, ca_bundle=None, insecure=False, listen="127.0.0.1", port=0,
-                            tls_cert=None, tls_key=None, allow_plain_http=False, no_browser=True)
+                            tls_cert=None, tls_key=None, allow_plain_http=False, no_browser=True, inventory=None)
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -224,3 +224,100 @@ class TestExposureRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInventory(unittest.TestCase):
+    def test_demo_inventory(self):
+        from troubleshoot.inventory import load_inventory
+        fws = load_inventory(DEMO_DIR / "firewalls.yaml")
+        self.assertEqual([f.name for f in fws], ["BRANCH-FW-01", "HQ-FW-01", "LAB-TEST-FIREWALL"])
+        self.assertTrue(fws[2].lab)
+        self.assertTrue(fws[0].covers("10.10.20.15"))
+        self.assertFalse(fws[1].covers("10.10.20.15"))
+
+    def test_csv_and_validation(self):
+        import tempfile
+        from pathlib import Path
+        from troubleshoot.inventory import InventoryError, load_inventory
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "fw.csv")
+            p.write_text("name,host,site,networks,lab\nBLR-FW-01,10.9.10.2,\"Bangalore, India\",10.9.0.0/16,\n"
+                         "LAB-TEST-FIREWALL,192.168.10.200,Lab,,yes\n")
+            fws = load_inventory(p)
+            self.assertEqual((fws[0].host, fws[0].site, fws[1].lab), ("10.9.10.2", "Bangalore, India", True))
+            p.write_text("name,host\nBLR-FW-01,10.9.10.2\nblr-fw-01,10.9.10.3\n")
+            with self.assertRaises(InventoryError):
+                load_inventory(p)                       # duplicate names
+            p.write_text("name,host\nX,bad host;rm\n")
+            with self.assertRaises(InventoryError):
+                load_inventory(p)
+
+    def test_generate_from_configs_round_trip(self):
+        import tempfile
+        from pathlib import Path
+        from troubleshoot.inventory import from_configs, load_inventory, to_yaml
+        entries = from_configs(DEMO_DIR, "FW-01$")
+        self.assertEqual([e.name for e in entries], ["BRANCH-FW-01", "HQ-FW-01"])
+        self.assertIn("10.10.20.0/24", entries[0].networks)
+        self.assertNotIn("10.255.0.0/30", entries[0].networks)    # point-to-point links left out
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "inv.yaml")
+            p.write_text(to_yaml(entries))
+            self.assertEqual([e.name for e in load_inventory(p)], ["BRANCH-FW-01", "HQ-FW-01"])
+
+    def test_management_ip_is_taken_from_the_config(self):
+        import tempfile
+        from pathlib import Path
+        from troubleshoot.inventory import from_configs
+        xml = (DEMO_DIR / "branch-fw.xml").read_text().replace(
+            "<hostname>BRANCH-FW-01</hostname>", "<hostname>BLR-FW-01</hostname><ip-address>10.9.10.2</ip-address>")
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "blr.xml").write_text(xml)
+            e = from_configs(d)[0]
+        self.assertEqual((e.name, e.host, e.config), ("BLR-FW-01", "10.9.10.2", None))
+
+
+class TestWebInventory(WebTestBase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.pop("PT_WEB_PASSWORD", None)
+        cls.srv = make_server(serve_args(inventory=str(DEMO_DIR / "firewalls.yaml")))
+        cls.port = cls.srv.server_address[1]
+        cls.quiet = mock.patch("sys.stderr", new_callable=lambda: open(os.devnull, "w"))
+        cls.quiet.start()
+        cls.thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.thread.start()
+
+    def token(self):
+        page = self.req("GET", "/")[1].decode()
+        return {"X-PT-Token": page.split('name="pt-token" content="')[1].split('"')[0]}
+
+    def test_list_lazy_and_default_skips_lab(self):
+        t = self.token()
+        data = json.loads(self.req("GET", "/api/firewalls", headers=t)[1])
+        self.assertEqual(data["default"], "BRANCH-FW-01")
+        branch = next(f for f in data["firewalls"] if f["name"] == "BRANCH-FW-01")
+        self.assertFalse(branch["loaded"])            # no test picks it, so it was never read
+        self.assertTrue(next(f for f in data["firewalls"] if f["name"] == "LAB-TEST-FIREWALL")["lab"])
+
+    def test_firewall_must_be_picked_and_is_used(self):
+        t = self.token()
+        r, body = self.req("POST", "/api/check", {"device": "10.20.20.5"}, t)
+        self.assertEqual((r.status, json.loads(body)["error"]), (400, "pick a firewall first"))
+        r, body = self.req("POST", "/api/check", {"fw": "HQ-FW-01", "device": "10.20.20.5", "destination": "198.51.100.9",
+                                                 "port": "443"}, t)
+        data = json.loads(body)
+        self.assertEqual((r.status, data["firewall"]), (200, "HQ-FW-01"))
+        self.assertEqual(json.loads(self.req("GET", "/api/status?fw=HQ-FW-01", headers=t)[1])["hostname"], "HQ-FW-01")
+        r, body = self.req("POST", "/api/check", {"fw": "NOPE", "device": "10.20.20.5"}, t)
+        self.assertEqual(r.status, 400)
+
+    def test_lab_firewall_is_flagged_in_results(self):
+        t = self.token()
+        r, body = self.req("POST", "/api/check", {"fw": "LAB-TEST-FIREWALL", "device": "10.10.20.66"}, t)
+        self.assertIn("TEST/LAB", json.loads(body)["notes"][0])
+
+    def test_locate(self):
+        t = self.token()
+        data = json.loads(self.req("POST", "/api/locate", {"device": "10.20.30.7"}, t)[1])
+        self.assertEqual([m["name"] for m in data["matches"]], ["HQ-FW-01"])
