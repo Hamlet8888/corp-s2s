@@ -104,22 +104,44 @@ class Firewall:
         self.client = None
         self.policy = None
         self.loaded_at: Optional[str] = None
+        self.active_host: Optional[str] = None   # which HA member answered
         self.error: Optional[str] = None
         self.mode = "live" if entry.host and not entry.config else ("demo" if args.demo else "offline")
         self.offline_logs = []
 
-    def _make_client(self):
+    def _make_client(self, host: Optional[str] = None):
         from core.api import PanosApiClient, PanosAuthError
         e, a = self.entry, self.args
+        host = host or e.host
         verify = e.ca_bundle or a.ca_bundle or (False if (e.insecure or a.insecure) else True)
         user = a.username or os.environ.get("PANOS_USERNAME")
-        client = PanosApiClient(e.host, username=user, verify=verify)
+        client = PanosApiClient(host, username=user, verify=verify)
         if not client.has_key:
             if not (user and os.environ.get("PANOS_PASSWORD")):
                 raise PanosAuthError(f"no API key for {e.name}: set PANOS_API_KEY_<HOST> or PANOS_API_KEY, or "
-                                     f"PANOS_USERNAME and PANOS_PASSWORD on the server", host=e.host)
+                                     f"PANOS_USERNAME and PANOS_PASSWORD on the server", host=host)
             client.generate_key()             # key kept in memory only
         return client
+
+    def _connect(self):
+        """Talk to the active HA member: traffic, threat and URL logs live only on the one passing traffic."""
+        if not self.entry.ha_peer:
+            return self._make_client(), self.entry.host
+        first_error, standby = None, None
+        for host in (self.entry.host, self.entry.ha_peer):
+            try:
+                client = self._make_client(host)
+                state = ha_state(client)
+            except Exception as exc:          # unreachable or refused: try the partner
+                first_error = first_error or exc
+                continue
+            if state in ("", "active", "active-primary", "active-secondary"):
+                return client, host
+            standby = standby or (client, host)
+        if standby:                           # neither says active: config is synced, use what answered
+            return standby
+        raise first_error
+
 
     def ensure_loaded(self) -> None:
         if self.policy is None:
@@ -130,8 +152,8 @@ class Firewall:
             try:
                 if self.mode == "live":
                     from .live import pull_config, pull_routes
-                    if self.client is None:
-                        self.client = self._make_client()
+                    if self.client is None or self.entry.ha_peer:   # HA: re-check who is active
+                        self.client, self.active_host = self._connect()
                     policy, _ = pull_config(self.client, vsys=self.entry.vsys)
                     pull_routes(self.client, policy)
                 else:
@@ -162,12 +184,20 @@ class Firewall:
 
     def summary(self) -> dict:
         return dict(inventory_dict(self.entry), mode=self.mode, loaded=self.policy is not None,
-                    loaded_at=self.loaded_at, error=self.error)
+                    loaded_at=self.loaded_at, active_host=self.active_host, error=self.error)
 
 
 # ---------------------------------------------------------------------------
 # Backend: the firewalls, recent reports and the API endpoints
 # ---------------------------------------------------------------------------
+
+def ha_state(client) -> str:
+    """This member's HA state ('active', 'passive', ...), or '' when HA isn't configured."""
+    root = client.op("<show><high-availability><state></state></show>")
+    if (root.findtext(".//enabled") or "").strip().lower() == "no":
+        return ""
+    return (root.findtext(".//local-info/state") or "").strip().lower()
+
 
 def _label(f: "Firewall") -> str:
     return f"{f.entry.name} ({f.entry.site})" if f.entry.site else f.entry.name

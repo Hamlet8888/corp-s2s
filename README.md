@@ -314,6 +314,10 @@ firewalls:
     networks: [10.14.0.0/16]
     east_west: Cisco Nexus        # traffic inside the site is switched, not firewalled
     firewalled_networks: [10.14.200.0/24]   # optional: parts of the site that DO sit behind the firewall
+  - name: TKO-FW-01
+    host: 10.18.10.11
+    ha_peer: 10.18.10.12          # optional: the HA secondary (see below)
+    networks: [10.18.0.0/16]
   - name: LAB-TEST-FIREWALL
     host: 192.168.10.200
     lab: true
@@ -333,7 +337,14 @@ one /16 that contains its firewall's management IP (BLR-FW-01 = 10.9.10.2, so 10
 come from the config (connected subnets and static routes to private space), minus routes that lead to another
 firewall's site. Then fill in `site` (and `group`), add `east_west:` for sites whose internal traffic is switched
 (e.g. Nexus data centers), add any lab firewalls by hand, and start `serve --inventory`. CSV works too
-(`name,host,site,group,networks,lab,note,east_west,firewalled_networks`).
+(`name,host,ha_peer,site,group,networks,lab,note,east_west,firewalled_networks`).
+
+**HA pairs.** List each pair once, under the primary's name. Traffic, threat and URL logs exist only on the member
+that was passing the traffic, so after a failover the primary alone is the wrong place to look. Add the secondary's
+management IP as `ha_peer`: each time the firewall is loaded or refreshed, the server asks both members
+(`show high-availability state`) and uses the active one, falling back to whichever answers when the other is down.
+Without `ha_peer` it always uses `host`. Policy and routes are synchronized, so the verdicts are the same either way;
+only the logs differ.
 
 **One API account for every firewall.** Push the read-only admin (role with XML API *Operational Requests* + *Log*)
 to all firewalls from a Panorama template, and give the server `PANOS_USERNAME` and `PANOS_PASSWORD`: it logs in to

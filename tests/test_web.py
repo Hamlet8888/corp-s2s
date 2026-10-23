@@ -235,6 +235,44 @@ class TestInventory(unittest.TestCase):
         self.assertTrue(fws[0].covers("10.10.20.15"))
         self.assertFalse(fws[1].covers("10.10.20.15"))
 
+    def test_ha_peer_picks_the_active_member(self):
+        import xml.etree.ElementTree as ET
+        from troubleshoot.inventory import FirewallEntry
+        from troubleshoot.web import Firewall
+
+        def state_xml(state):
+            return ET.fromstring(f"<response><result><enabled>yes</enabled><group><local-info>"
+                                 f"<state>{state}</state></local-info></group></result></response>")
+
+        def connect(states):
+            """states: host -> HA state, or None for unreachable."""
+            def make(host=None):
+                if states[host] is None:
+                    raise ConnectionError(f"{host} unreachable")
+                return mock.Mock(op=mock.Mock(return_value=state_xml(states[host])), host=host)
+            fw = Firewall(FirewallEntry("TKO-FW-01", host="10.18.10.11", ha_peer="10.18.10.12"), serve_args(demo=False))
+            fw._make_client = make
+            return fw._connect()[1]
+
+        self.assertEqual(connect({"10.18.10.11": "active", "10.18.10.12": "passive"}), "10.18.10.11")
+        self.assertEqual(connect({"10.18.10.11": "passive", "10.18.10.12": "active"}), "10.18.10.12")   # failed over
+        self.assertEqual(connect({"10.18.10.11": None, "10.18.10.12": "active"}), "10.18.10.12")        # primary down
+        self.assertEqual(connect({"10.18.10.11": "suspended", "10.18.10.12": None}), "10.18.10.11")    # only one answers
+        with self.assertRaises(ConnectionError):
+            connect({"10.18.10.11": None, "10.18.10.12": None})
+
+    def test_ha_peer_round_trips_through_yaml(self):
+        import tempfile
+        from pathlib import Path
+        from troubleshoot.inventory import FirewallEntry, InventoryError, load_inventory, to_yaml
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "fw.yaml"
+            p.write_text(to_yaml([FirewallEntry("TKO-FW-01", host="10.18.10.11", ha_peer="10.18.10.12")]))
+            self.assertEqual(load_inventory(p)[0].ha_peer, "10.18.10.12")
+            p.write_text("firewalls:\n  - {name: X, host: 10.1.1.1, ha_peer: 'bad host'}\n")
+            with self.assertRaises(InventoryError):
+                load_inventory(p)
+
     def test_most_specific_network_wins(self):
         from troubleshoot.inventory import FirewallEntry
         branch = FirewallEntry("BLR-FW-01", host="10.9.10.2", networks=["10.9.0.0/16", "10.0.0.0/8"])

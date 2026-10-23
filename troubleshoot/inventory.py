@@ -24,7 +24,7 @@ The inventory is a small YAML or CSV file kept out of git (``inventory/`` is ign
       - name: OFFLINE-FW
         config: exports/fw.xml     # offline: a saved config (and optional logs: [...])
 
-CSV works too, with a header row: ``name,host,site,group,networks,lab,note,east_west,firewalled_networks``
+CSV works too, with a header row: ``name,host,ha_peer,site,group,networks,lab,note,east_west,firewalled_networks``
 (lists separated by spaces).
 
 It can be generated instead of typed:
@@ -56,6 +56,7 @@ _NAME_OK = re.compile(r"^[A-Za-z0-9 _.\-()]{1,64}$")
 class FirewallEntry:
     name: str
     host: Optional[str] = None          # live: management IP or name
+    ha_peer: Optional[str] = None       # live: HA partner, used when 'host' is passive or unreachable
     site: str = ""
     group: str = ""
     networks: List[str] = field(default_factory=list)
@@ -123,6 +124,9 @@ def _entry(raw: dict, defaults: dict, base: Path, where: str) -> FirewallEntry:
     host = str(d["host"]).strip() if d.get("host") else None
     if host and not _HOST_OK.match(host):
         raise InventoryError(f"{where}: invalid host {host!r}")
+    ha_peer = str(d["ha_peer"]).strip() if d.get("ha_peer") else None
+    if ha_peer and not _HOST_OK.match(ha_peer):
+        raise InventoryError(f"{where}: invalid ha_peer {ha_peer!r}")
     config = d.get("config")
     if not host and not config:
         raise InventoryError(f"{where}: {name} needs 'host' (live) or 'config' (offline)")
@@ -135,7 +139,7 @@ def _entry(raw: dict, defaults: dict, base: Path, where: str) -> FirewallEntry:
         except ValueError:
             raise InventoryError(f"{where}: {name}: invalid network {n!r}") from None
     return FirewallEntry(
-        name=name, host=host, site=str(d.get("site", "")).strip(), group=str(d.get("group", "")).strip(),
+        name=name, host=host, ha_peer=ha_peer, site=str(d.get("site", "")).strip(), group=str(d.get("group", "")).strip(),
         networks=networks, config=resolve(config) if config else None,
         logs=[resolve(p) for p in _as_list(d.get("logs"))], serial=str(d["serial"]) if d.get("serial") else None,
         vsys=str(d.get("vsys") or "vsys1"),
@@ -289,6 +293,8 @@ def to_yaml(entries: List[FirewallEntry], note: str = "") -> str:
         lines.append(f"  - name: {q(e.name)}")
         if e.host:
             lines.append(f"    host: {q(e.host)}")
+        if e.ha_peer:
+            lines.append(f"    ha_peer: {q(e.ha_peer)}")
         if e.config:
             lines.append(f"    config: {q(e.config)}")
         lines.append(f"    site: {q(e.site)}" if e.site else "    site: \"\"")
