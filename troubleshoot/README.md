@@ -126,14 +126,14 @@ pan-troubleshoot serve --inventory inventory/firewalls.yaml  # every site: pick 
 ```
 
 **All sites, picked automatically.** With `--inventory`, the firewall picker defaults to **Automatic – from the IP
-addresses**: each site's `networks` (e.g. LVD = 10.14.0.0/16, Bangalore = 10.9.0.0/16) tell the checker which
+addresses**: each site's `networks` (e.g. WEST-DC = 10.60.0.0/16, East = 10.50.0.0/16) tell the checker which
 firewall(s) a connection passes, and it checks those, so helpdesk only types the two addresses:
 
 | Device → destination | Checked |
 |---|---|
-| 10.9.20.15 (Bangalore) → 10.14.1.21 (LVD) | BLR-FW-01 *and* LVD-FW-01; the answer names the one that blocks ("Blocked at LVD-FW-01 …") and shows the path |
-| 10.14.1.21 → github.com | LVD-FW-01 only |
-| 10.14.1.21 → 10.14.35.20, at a site with `east_west: Cisco Nexus` | none: "Not a firewall issue: this traffic stays inside LVD on the Cisco Nexus", with what to check on the switches |
+| 10.50.20.15 (East office) → 10.60.1.21 (WEST-DC) | EAST-FW-01 *and* WEST-DC-FW-01; the answer names the one that blocks ("Blocked at WEST-DC-FW-01 …") and shows the path |
+| 10.60.1.21 → github.com | WEST-DC-FW-01 only |
+| 10.60.1.21 → 10.60.35.20, at a site with `east_west: Cisco Nexus` | none: "Not a firewall issue: this traffic stays inside WEST-DC on the Cisco Nexus", with what to check on the switches |
 | two hosts on the same subnet | none: "both are on the same network" |
 
 The most specific network wins (a site's /16 beats a branch's 10.0.0.0/8 summary route), an address matching two
@@ -145,24 +145,25 @@ show a warning when chosen.
 ```yaml
  inventory/firewalls.yaml  (git-ignored)
 firewalls:
-  - name: BLR-FW-01
-    host: 10.9.10.2               # management IP
-    site: Bangalore, India
-    group: APAC                   # optional: groups the drop-down
-    networks: [10.9.0.0/16]       # the site's address space: picks this firewall for these IPs
-  - name: LVD-FW-01
-    host: 10.14.10.2
-    site: Las Vegas Data Center
-    networks: [10.14.0.0/16]
+  - name: EAST-FW-01
+    host: 10.50.10.2              # management IP
+    site: East office
+    group: East                   # optional: groups the drop-down
+    networks: [10.50.0.0/16]      # the site's address space: picks this firewall for these IPs
+  - name: WEST-DC-FW-01
+    host: 10.60.10.2
+    site: West data center
+    networks: [10.60.0.0/16]
     east_west: Cisco Nexus        # traffic inside the site is switched, not firewalled
-    firewalled_networks: [10.14.200.0/24]   # optional: parts of the site that DO sit behind the firewall
-  - name: TKO-FW-01
-    host: 10.18.10.11
-    ha_peer: 10.18.10.12          # optional: the HA secondary (see below)
-  - name: OHI-DC-FW-01
-    host: 10.28.10.10
+    firewalled_networks: [10.60.200.0/24]   # optional: parts of the site that DO sit behind the firewall
+  - name: EDGE-FW-01
+    host: 10.70.10.11
+    ha_peer: 10.70.10.12          # optional: the HA secondary (see below)
+    networks: [10.70.0.0/16]
+  - name: CLOUD-FW-01
+    host: 10.80.10.10
     ha: false                     # standalone by design (e.g. a cloud instance)
-    networks: [10.18.0.0/16]
+    networks: [10.80.0.0/16]
   - name: LAB-TEST-FIREWALL
     host: 192.168.10.200
     lab: true
@@ -173,12 +174,12 @@ You don't have to type it. Generate it from the config exports you already keep 
 hostname, management IP and internal networks are written: no secrets), or from Panorama:
 
 ```bash
-pan-troubleshoot inventory --from-configs ~/path/to/"All Firewall Configs" --filter 'FW-01$' --site-prefix 16 --output inventory/firewalls.yaml
+pan-troubleshoot inventory --from-configs ~/path/to/"firewall-configs" --filter 'FW-01$' --site-prefix 16 --output inventory/firewalls.yaml
 pan-troubleshoot inventory --panorama panorama.corp.example --filter 'FW-01$' --output inventory/firewalls.yaml
 ```
 
 `--filter 'FW-01$'` keeps the primary of each HA pair. `--site-prefix 16` is for address plans where each site is
-one /16 that contains its firewall's management IP (BLR-FW-01 = 10.9.10.2, so 10.9.0.0/16). Without it, the networks
+one /16 that contains its firewall's management IP (EAST-FW-01 = 10.50.10.2, so 10.50.0.0/16). Without it, the networks
 come from the config (connected subnets and static routes to private space), minus routes that lead to another
 firewall's site. Then fill in `site` (and `group`), add `east_west:` for sites whose internal traffic is switched
 (e.g. Nexus data centers), add any lab firewalls by hand, and start `serve --inventory`. CSV works too

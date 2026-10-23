@@ -6,17 +6,17 @@ The inventory is a small YAML or CSV file kept out of git (``inventory/`` is ign
     defaults:                      # optional, applied to every firewall
       ca_bundle: /etc/fwcheck/mgmt-ca.pem
     firewalls:
-      - name: BLR-FW-01            # shown in the drop-down
-        host: 10.9.10.2            # management IP or name
-        site: Bangalore, India     # optional, shown next to the name
-        group: APAC                # optional, groups the drop-down
-        networks: [10.9.0.0/16]    # the site's address space: the app picks this firewall for these IPs
-      - name: LVD-FW-01
-        host: 10.14.10.2
-        site: Las Vegas Data Center
-        networks: [10.14.0.0/16]
+      - name: EAST-FW-01           # shown in the drop-down
+        host: 10.50.10.2           # management IP or name
+        site: East office          # optional, shown next to the name
+        group: East                # optional, groups the drop-down
+        networks: [10.50.0.0/16]   # the site's address space: the app picks this firewall for these IPs
+      - name: WEST-DC-FW-01
+        host: 10.60.10.2
+        site: West data center
+        networks: [10.60.0.0/16]
         east_west: Cisco Nexus     # traffic inside the site is switched by the Nexus, not this firewall
-        firewalled_networks: [10.14.200.0/24]   # optional: parts of the site that DO sit behind the firewall
+        firewalled_networks: [10.60.200.0/24]   # optional: parts of the site that DO sit behind the firewall
       - name: LAB-TEST-FIREWALL
         host: 192.168.10.200
         lab: true                  # listed separately as "test / lab - don't use"
@@ -222,7 +222,7 @@ def from_configs(folder, name_filter: Optional[str] = None, site_prefix: Optiona
     """Read every firewall config export in *folder* (recursively) and return inventory entries.
 
     *site_prefix* (e.g. 16) is for address plans where each site owns one block that also holds the
-    firewall's management IP: the site's network is then management-IP/prefix (10.9.10.2 -> 10.9.0.0/16)
+    firewall's management IP: the site's network is then management-IP/prefix (10.50.10.2 -> 10.50.0.0/16)
     instead of the subnets and routes found in the config.
     """
     from .policy import policy_from_root

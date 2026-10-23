@@ -426,7 +426,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--filter", metavar="REGEX", help="only firewall names matching this, e.g. 'FW-01$'")
     p.add_argument("--site-prefix", type=int, metavar="N", choices=range(8, 31),
                    help="each site is one /N block containing the firewall's management IP (e.g. 16: "
-                        "10.9.10.2 -> 10.9.0.0/16)")
+                        "10.50.10.2 -> 10.50.0.0/16)")
     p.add_argument("--output", metavar="FILE", help="write to this file (mode 0600) instead of the screen")
     p.add_argument("--force", action="store_true", help="overwrite --output if it exists")
     p.add_argument("--username", help="Panorama API user if no PANOS_API_KEY is set")
