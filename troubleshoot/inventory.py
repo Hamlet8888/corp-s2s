@@ -24,7 +24,7 @@ The inventory is a small YAML or CSV file kept out of git (``inventory/`` is ign
       - name: OFFLINE-FW
         config: exports/fw.xml     # offline: a saved config (and optional logs: [...])
 
-CSV works too, with a header row: ``name,host,ha_peer,site,group,networks,lab,note,east_west,firewalled_networks``
+CSV works too, with a header row: ``name,host,ha_peer,ha,site,group,networks,lab,note,east_west,firewalled_networks``
 (lists separated by spaces).
 
 It can be generated instead of typed:
@@ -57,6 +57,7 @@ class FirewallEntry:
     name: str
     host: Optional[str] = None          # live: management IP or name
     ha_peer: Optional[str] = None       # live: HA partner, used when 'host' is passive or unreachable
+    ha: Optional[bool] = None           # False: standalone by design; True: must be a pair; None: not stated
     site: str = ""
     group: str = ""
     networks: List[str] = field(default_factory=list)
@@ -144,7 +145,7 @@ def _entry(raw: dict, defaults: dict, base: Path, where: str) -> FirewallEntry:
         logs=[resolve(p) for p in _as_list(d.get("logs"))], serial=str(d["serial"]) if d.get("serial") else None,
         vsys=str(d.get("vsys") or "vsys1"),
         ca_bundle=resolve(d["ca_bundle"]) if d.get("ca_bundle") else None, insecure=_yes(d.get("insecure", False)),
-        lab=_yes(d.get("lab", False)), note=str(d.get("note", "")).strip()[:200],
+        ha=None if d.get("ha") is None else _yes(d["ha"]), lab=_yes(d.get("lab", False)), note=str(d.get("note", "")).strip()[:200],
         east_west=str(d.get("east_west", "")).strip()[:64], firewalled_networks=firewalled)
 
 
@@ -308,6 +309,8 @@ def to_yaml(entries: List[FirewallEntry], note: str = "") -> str:
             lines.append(f"    east_west: {q(e.east_west)}")
         if e.firewalled_networks:
             lines.append(f"    firewalled_networks: [{', '.join(e.firewalled_networks)}]")
+        if e.ha is not None:
+            lines.append(f"    ha: {'true' if e.ha else 'false'}")
         if e.lab:
             lines.append("    lab: true")
         if e.note:

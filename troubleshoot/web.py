@@ -167,6 +167,22 @@ class Firewall:
                 self.error = str(exc)
                 raise
 
+    def ha_health(self):
+        """HA health from the member we talk to; doesn't need the config to be loaded."""
+        from .ha import HA_COMMAND, HaHealth, evaluate, parse_ha
+        e = self.entry
+        if self.mode != "live":
+            return HaHealth(e.name, "unknown", "Not checked: this firewall is loaded from a config file",
+                            ["HA state is only available from a live firewall."])
+        try:
+            with self.lock:
+                if self.client is None:
+                    self.client, self.active_host = self._connect()
+                root = self.client.op(HA_COMMAND)
+        except Exception as exc:
+            return HaHealth(e.name, "unknown", "Couldn't ask the firewall", [str(exc)[:300]])
+        return evaluate(e.name, parse_ha(root), e.ha)
+
     def logs(self, target, peer, port, since, nlogs=500):
         """Live: query the firewall. Offline: the loaded files. Returns (entries, capped kinds)."""
         if self.mode != "live":
@@ -208,6 +224,7 @@ class Backend:
         self.args = args
         self.firewalls: "OrderedDict[str, Firewall]" = OrderedDict((e.name, Firewall(e, args)) for e in entries)
         self.reports: "OrderedDict[str, str]" = OrderedDict()
+        self.ha_results: Dict[str, dict] = {}   # last HA check per firewall, for notes on connection checks
         self.reports_lock = threading.Lock()
 
     @property
@@ -382,6 +399,11 @@ class Backend:
                                    direction, single=len(hops) == 1) for f, role in hops]
         overall = combine([{"name": r["name"], "site": r["site"], "role": r["role"], "answer": r.pop("_answer")}
                            for r in results], device_label, dest_label, port)
+        for f, _ in hops:
+            ha = self.ha_results.get(f.entry.name)
+            if ha and ha["level"] in ("fail", "warn"):
+                notes.append(f"{f.entry.name}'s HA pair was unhealthy when last checked ({ha['checked_at']}): "
+                             f"{ha['headline']}. This doesn't change the result above, but tell the network team.")
         return {"answer": overall.to_dict(), "hops": results, "notes": notes, "auto": bool(how),
                 "path": [{"name": r["name"], "site": r["site"], "role": r["role"], "status": r["answer"]["status"],
                           "lab": r["lab"]} for r in results]}
@@ -470,6 +492,21 @@ class Backend:
                 "rules": [{"name": r.name, "label": r.label, "action": r.action,
                            "zones": f"{','.join(r.from_zones)} -> {','.join(r.to_zones)}"}
                           for r in p.security_rules]}
+
+    def ha(self, params: dict) -> dict:
+        """HA health of every firewall (lab ones last), asked in parallel."""
+        from concurrent.futures import ThreadPoolExecutor
+        from .ha import CLI_COMMAND
+        fws = sorted(self.firewalls.values(), key=lambda f: (f.entry.lab, f.entry.group, f.entry.name))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda f: f.ha_health(), fws))
+        out = []
+        for f, r in zip(fws, results):
+            d = dict(r.to_dict(), site=f.entry.site, group=f.entry.group, lab=f.entry.lab, host=f.entry.host,
+                     active_host=f.active_host, checked_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            self.ha_results[f.entry.name] = d
+            out.append(d)
+        return {"firewalls": out, "counts": Counter(d["level"] for d in out if not d["lab"]), "command": CLI_COMMAND}
 
     def rules(self, params: dict) -> dict:
         p = self.fw(params).policy
@@ -643,6 +680,7 @@ class Handler(BaseHTTPRequestHandler):
                       ("POST", "/api/matrix"): lambda: b.matrix(params),
                       ("GET", "/api/audit"): lambda: b.audit(params),
                       ("GET", "/api/rules"): lambda: b.rules(params),
+                      ("GET", "/api/ha"): lambda: b.ha(params),
                       ("GET", "/api/profiles"): lambda: b.profiles(params),
                       ("POST", "/api/logs"): lambda: b.logs(params),
                       ("POST", "/api/refresh"): lambda: b.refresh(params)}

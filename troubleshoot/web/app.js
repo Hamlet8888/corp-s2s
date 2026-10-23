@@ -538,4 +538,42 @@ loaders.rules = () => once("rules", "/api/rules", $("#rules-result"), rulesView)
 loaders.profiles = () => once("profiles", "/api/profiles", $("#profiles-result"), profilesView);
 loaders.audit = () => once("audit", "/api/audit", $("#audit-result"), auditView);
 
+// ---------------------------------------------------------------------------
+// HA health: every firewall at once, independent of the picker
+// ---------------------------------------------------------------------------
+const HA_LEVEL = { fail: ["deny", "Failover not working"], warn: ["alert", "Degraded"], ok: ["allow", "Healthy"],
+  standalone: ["", "Standalone"], unknown: ["alert", "Not checked"] };
+
+async function loadHa(force) {
+  const el = $("#ha-result");
+  if (cache.ha && !force) return;
+  el.replaceChildren(h("div", { class: "busy" }, h("span", { class: "spinner" }), "Asking every firewall…"));
+  try { cache.ha = await api("/api/ha"); el.replaceChildren(haView(cache.ha)); }
+  catch (e) { el.replaceChildren(h("div", { class: "error" }, e.message)); }
+}
+
+function haView(r) {
+  const order = ["fail", "warn", "unknown", "ok", "standalone"];
+  const rows = r.firewalls.slice().sort((a, b) => (a.lab - b.lab) || (order.indexOf(a.level) - order.indexOf(b.level)));
+  const i = (x) => x.info || {};
+  return h("div", { class: "card" }, h("h1", {}, "HA health"),
+    h("p", { class: "muted" }, "Each firewall reports its own HA state, its peer's, the HA links and config sync ",
+      h("span", { class: "mono" }, `(${r.command})`), ". Read-only. Standalone firewalls are marked ",
+      h("span", { class: "mono" }, "ha: false"), " in the inventory."),
+    h("div", { class: "counters" }, order.map((l) => h("div", { class: "counter" }, h("b", {}, r.counts[l] || 0),
+      h("span", { class: `pill ${HA_LEVEL[l][0]}` }, HA_LEVEL[l][1])))),
+    h("button", { class: "btn ghost small", type: "button", onclick: () => loadHa(true) }, "Check again"),
+    h("div", { class: "tablewrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Firewall", "Status", "This / peer", "Links (HA1 · HA2)", "Config sync", "Details"].map((t) => h("th", {}, t)))),
+      h("tbody", {}, rows.map((x) => h("tr", { class: x.lab ? "disabled" : null },
+        h("td", {}, h("b", {}, x.firewall), h("div", { class: "muted" }, [x.site, x.lab ? "test / lab" : ""].filter(Boolean).join(" · "))),
+        h("td", {}, h("span", { class: `pill ${HA_LEVEL[x.level][0]}` }, HA_LEVEL[x.level][1])),
+        h("td", {}, i(x).enabled ? `${i(x).local || "?"} / ${i(x).peer || "?"}` : "—",
+          i(x).peer_ip ? h("div", { class: "muted mono" }, `peer ${i(x).peer_ip}`) : null),
+        h("td", {}, i(x).enabled ? `${i(x).ha1 || "?"} · ${i(x).ha2 || "?"}` : "—"),
+        h("td", {}, i(x).enabled ? (i(x).running_sync || "?") : "—"),
+        h("td", {}, h("div", {}, x.headline), (x.problems || []).map((p) => h("div", { class: "muted" }, `• ${p}`)))))))));
+}
+loaders.ha = () => loadHa(false);
+
 loadFirewalls();

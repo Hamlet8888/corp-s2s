@@ -317,6 +317,9 @@ firewalls:
   - name: TKO-FW-01
     host: 10.18.10.11
     ha_peer: 10.18.10.12          # optional: the HA secondary (see below)
+  - name: OHI-DC-FW-01
+    host: 10.28.10.10
+    ha: false                     # standalone by design (e.g. a cloud instance)
     networks: [10.18.0.0/16]
   - name: LAB-TEST-FIREWALL
     host: 192.168.10.200
@@ -337,7 +340,7 @@ one /16 that contains its firewall's management IP (BLR-FW-01 = 10.9.10.2, so 10
 come from the config (connected subnets and static routes to private space), minus routes that lead to another
 firewall's site. Then fill in `site` (and `group`), add `east_west:` for sites whose internal traffic is switched
 (e.g. Nexus data centers), add any lab firewalls by hand, and start `serve --inventory`. CSV works too
-(`name,host,ha_peer,site,group,networks,lab,note,east_west,firewalled_networks`).
+(`name,host,ha_peer,ha,site,group,networks,lab,note,east_west,firewalled_networks`).
 
 **HA pairs.** List each pair once, under the primary's name. Traffic, threat and URL logs exist only on the member
 that was passing the traffic, so after a failover the primary alone is the wrong place to look. Add the secondary's
@@ -345,6 +348,20 @@ management IP as `ha_peer`: each time the firewall is loaded or refreshed, the s
 (`show high-availability state`) and uses the active one, falling back to whichever answers when the other is down.
 Without `ha_peer` it always uses `host`. Policy and routes are synchronized, so the verdicts are the same either way;
 only the logs differ.
+
+**HA health page.** *Engineer tools → HA health* asks every firewall `show high-availability all` (in parallel,
+read-only) and lists each one as healthy, degraded, failover not working, standalone or not checked. It flags:
+
+| Problem | Level |
+|---|---|
+| Peer not reachable, peer or this member suspended/non-functional, HA1 down, split brain (both active), neither active | failover not working |
+| Config not synchronized or sync turned off, HA2 (session sync) or HA1 backup down, session state sync incomplete | degraded |
+| HA off on a firewall listed with `ha: true` | failover not working |
+| HA off and nothing in the inventory | degraded, until you add `ha: false` |
+
+The member you list as `host` reports its peer's state too, so this works without `ha_peer`. Mark standalone
+firewalls (cloud instances, labs) with `ha: false`. When the page last found a pair unhealthy, connection checks
+through that firewall carry a note telling helpdesk to let the network team know.
 
 **One API account for every firewall.** Push the read-only admin (role with XML API *Operational Requests* + *Log*)
 to all firewalls from a Panorama template, and give the server `PANOS_USERNAME` and `PANOS_PASSWORD`: it logs in to

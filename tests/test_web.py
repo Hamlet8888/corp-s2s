@@ -273,6 +273,33 @@ class TestInventory(unittest.TestCase):
             with self.assertRaises(InventoryError):
                 load_inventory(p)
 
+    def test_ha_health(self):
+        import xml.etree.ElementTree as ET
+        from troubleshoot.ha import evaluate, parse_ha
+
+        def ha(local="active", peer="passive", conn="up", ha1="up", ha2="up", sync="synchronized", mode="Active-Passive"):
+            return parse_ha(ET.fromstring(
+                f"<response status='success'><result><enabled>yes</enabled><group><mode>{mode}</mode>"
+                f"<local-info><state>{local}</state><state-sync>Complete</state-sync></local-info>"
+                f"<peer-info><conn-status>{conn}</conn-status><state>{peer}</state><mgmt-ip>10.14.10.5/24</mgmt-ip>"
+                f"<conn-ha1><conn-status>{ha1}</conn-status></conn-ha1><conn-ha2><conn-status>{ha2}</conn-status></conn-ha2>"
+                f"</peer-info><running-sync>{sync}</running-sync><running-sync-enabled>yes</running-sync-enabled>"
+                f"</group></result></response>"))
+
+        off = parse_ha(ET.fromstring("<response><result><enabled>no</enabled></result></response>"))
+        self.assertEqual(ha().peer_ip, "10.14.10.5")
+        self.assertEqual(evaluate("LVD", ha()).level, "ok")
+        self.assertEqual(evaluate("LVD", ha(local="passive", peer="active")).level, "ok")
+        self.assertEqual(evaluate("LVD", ha(local="active-primary", peer="active-secondary", mode="Active-Active")).level, "ok")
+        self.assertEqual(evaluate("LVD", ha(sync="not synchronized")).level, "warn")
+        self.assertEqual(evaluate("LVD", ha(ha2="down")).level, "warn")
+        self.assertEqual(evaluate("LVD", ha(conn="down", peer="unknown")).level, "fail")
+        self.assertEqual(evaluate("LVD", ha(peer="suspended")).level, "fail")
+        self.assertIn("split brain", evaluate("LVD", ha(peer="active")).problems[0])
+        self.assertEqual(evaluate("OHI-DC", off, expected=False).level, "standalone")
+        self.assertEqual(evaluate("LVD", off, expected=True).level, "fail")
+        self.assertEqual(evaluate("X", off).level, "warn")                       # not stated in the inventory
+
     def test_most_specific_network_wins(self):
         from troubleshoot.inventory import FirewallEntry
         branch = FirewallEntry("BLR-FW-01", host="10.9.10.2", networks=["10.9.0.0/16", "10.0.0.0/8"])
@@ -358,6 +385,13 @@ class TestWebInventory(WebTestBase):
         branch = next(f for f in data["firewalls"] if f["name"] == "BRANCH-FW-01")
         self.assertFalse(branch["loaded"])            # no test picks it, so it was never read
         self.assertTrue(next(f for f in data["firewalls"] if f["name"] == "LAB-TEST-FIREWALL")["lab"])
+
+    def test_ha_page_offline(self):
+        data = json.loads(self.req("GET", "/api/ha", headers=self.token())[1])
+        self.assertEqual(len(data["firewalls"]), 3)
+        self.assertTrue(all(f["level"] == "unknown" for f in data["firewalls"]))   # config files: no live HA state
+        self.assertEqual(data["firewalls"][-1]["firewall"], "LAB-TEST-FIREWALL")   # lab last
+        self.assertEqual(data["command"], "show high-availability all")
 
     def check(self, **params):
         r, body = self.req("POST", "/api/check", params, self.token())
