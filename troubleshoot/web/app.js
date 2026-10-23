@@ -341,7 +341,7 @@ function renderPlans(d) {
 function renderCommands(d) {
   return d.verification_commands.map((cs) => h("div", {},
     h("h3", {}, cs.flow),
-    cs.groups.map((g) => h("div", {}, h("div", { class: "muted" }, g.title), cmdBlock(g.commands)))));
+    cs.groups.map((g) => h("div", {}, h("div", { class: "muted cmd-title" }, g.title), cmdBlock(g.commands)))));
 }
 
 function renderFindings(findings) {
