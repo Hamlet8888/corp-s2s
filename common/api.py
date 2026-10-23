@@ -644,7 +644,7 @@ def _check_xpath(xpath: str) -> str:
 
 
 def entry_xpath(*parts) -> str:
-    """Build a validated xpath; see :func:`core.xpath.entry_xpath`."""
+    """Build a validated xpath; see :func:`common.xpath.entry_xpath`."""
     try:
         return _entry_xpath(*parts)
     except XpathError as exc:

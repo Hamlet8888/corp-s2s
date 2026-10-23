@@ -16,8 +16,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 
-from core.api import PanosApiClient, PanosApiError, _xml_text
-from core.parser import strip_secrets
+from common.api import PanosApiClient, PanosApiError, _xml_text
+from common.parser import strip_secrets
 
 from .engine import PROTO_NUMBERS, Finding, FlowTrace
 from .objects import first_ip

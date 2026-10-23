@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from core.parser import _entries, _first_child_tag, _int, _members, _text
+from common.parser import _entries, _first_child_tag, _int, _members, _text
 
 from .objects import Interval, interval_str, try_target
 
@@ -173,7 +173,7 @@ def _static(table: RouteTable, vr: str, entries, store) -> None:
 
 
 def routes_from_config(net: ET.Element, vrs, interfaces, store=None) -> RouteTable:
-    """Build a table from legacy virtual routers (``vrs`` from :mod:`core.parser`) and logical routers."""
+    """Build a table from legacy virtual routers (``vrs`` from :mod:`common.parser`) and logical routers."""
     table = RouteTable()
     for v in vrs:
         table.vr_interfaces[v.name] = list(v.interfaces)

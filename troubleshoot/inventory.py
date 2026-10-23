@@ -45,8 +45,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from core import miniyaml
-from core.parser import _entries, _text, load_config
+from common import miniyaml
+from common.parser import _entries, _text, load_config
 
 _HOST_OK = re.compile(r"^[A-Za-z0-9.\-:\[\]]+$")
 _NAME_OK = re.compile(r"^[A-Za-z0-9 _.\-()]{1,64}$")

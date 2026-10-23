@@ -1,4 +1,4 @@
-"""Offline tests for core.api. A fake session replays canned PAN-OS responses, so no device is needed."""
+"""Offline tests for common.api. A fake session replays canned PAN-OS responses, so no device is needed."""
 
 import io
 import logging
@@ -10,8 +10,8 @@ from unittest import mock
 
 import requests
 
-from core import api
-from core.api import (PanosApiClient, PanosAuthError, PanosCommitError, PanosLockError,
+from common import api
+from common.api import (PanosApiClient, PanosAuthError, PanosCommitError, PanosLockError,
                       PanosResponseError, PanosSafetyError, PanosTimeoutError, entry_xpath, template_root)
 
 FAKE_KEY = "LUFRPT1FAKEKEYfakekeyFAKEKEY0123456789=="
@@ -52,7 +52,7 @@ def client(*responses, **kw):
     return PanosApiClient(HOST, api_key=FAKE_KEY, session=s, **kw), s
 
 
-@mock.patch("core.api.time.sleep", lambda *_: None)
+@mock.patch("common.api.time.sleep", lambda *_: None)
 class TestTransport(unittest.TestCase):
     def test_key_only_in_header_never_in_body_or_url(self):
         c, s = client(ok("<system><hostname>FW01</hostname></system>"))
@@ -124,7 +124,7 @@ class TestTransport(unittest.TestCase):
         self.assertEqual(len(s.calls), 1)
 
 
-@mock.patch("core.api.time.sleep", lambda *_: None)
+@mock.patch("common.api.time.sleep", lambda *_: None)
 class TestWriteSafety(unittest.TestCase):
     GW = ("<entry name='A-B'><authentication><pre-shared-key><key>TopSecretPSK</key></pre-shared-key>"
           "</authentication><peer-address><ip>192.0.2.1</ip></peer-address></entry>")
@@ -170,7 +170,7 @@ class TestWriteSafety(unittest.TestCase):
                                                             "entry[@name='localhost.localdomain']"))
 
 
-@mock.patch("core.api.time.sleep", lambda *_: None)
+@mock.patch("common.api.time.sleep", lambda *_: None)
 class TestCommit(unittest.TestCase):
     def _job(self, status, result, lines=""):
         return ok(f"<job><id>42</id><type>Commit</type><status>{status}</status><result>{result}</result>"
@@ -205,7 +205,7 @@ class TestCommit(unittest.TestCase):
 
     def test_job_timeout(self):
         c, _ = client(ok("<job>42</job>"), *[self._job("ACT", "PEND") for _ in range(5)], allow_writes=True)
-        with mock.patch("core.api.time.monotonic", side_effect=[0, 0, 1000]):
+        with mock.patch("common.api.time.monotonic", side_effect=[0, 0, 1000]):
             with self.assertRaises(PanosTimeoutError):
                 c.commit("x", timeout=10)
 

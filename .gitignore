@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
-# corp-s2s: keep production data out of version control.
-# Only code, docs and the fictional examples/ data belong in git.
+# paloalto-automation-tools: keep production data out of version control.
+# Only code, docs and each tool's fictional examples/ data belong in git.
 # ---------------------------------------------------------------------------
 
 # --- Production / real-world data -----------------------------------------
@@ -12,8 +12,9 @@
 *.set
 *.tgz
 # ...but allow fictional fixtures used by tests and demos
-!examples/**/*.xml
-!tests/fixtures/**/*.xml
+!*/examples/**/*.xml
+!*/examples/*.xml
+!*/tests/fixtures/**/*.xml
 
 # Real inventories, generated plans, backups, audit reports
 inventory/

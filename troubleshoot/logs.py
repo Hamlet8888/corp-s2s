@@ -8,7 +8,7 @@ Supported inputs, normalised into :class:`LogEntry`:
 
 URL-filtering logs are threat logs with subtype ``url``; they are classified as ``url``.
 
-Standard library only (plus :mod:`core.api` for live queries). Python 3.9+.
+Standard library only (plus :mod:`common.api` for live queries). Python 3.9+.
 """
 
 from __future__ import annotations

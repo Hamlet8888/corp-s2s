@@ -1,7 +1,7 @@
 """
 Policy model for troubleshooting: zones, security rules, NAT rules, security profiles and routes.
 
-Built from the same exports :mod:`core.parser` reads (XML or brace format, secrets stripped on
+Built from the same exports :mod:`common.parser` reads (XML or brace format, secrets stripped on
 load), or from a live ``show config running``. Rulebases are evaluated in PAN-OS order:
 
     Panorama pre-rules  ->  local rules  ->  Panorama post-rules  ->  intrazone/interzone default
@@ -18,9 +18,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from core.parser import (_entries, _first_child_tag, _members, _names, _parse_gateways, _parse_interfaces,
+from common.parser import (_entries, _first_child_tag, _members, _names, _parse_gateways, _parse_interfaces,
                          _parse_tunnels, _parse_vrs, _text, _yes, load_config)
-from core.parser import IkeGateway, Interface, IpsecTunnel
+from common.parser import IkeGateway, Interface, IpsecTunnel
 
 from .objects import ObjectStore
 from .routing import RouteTable, routes_from_config

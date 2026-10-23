@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from core.parser import _entries, _members, _text
+from common.parser import _entries, _members, _text
 
 FULL, PARTIAL, UNKNOWN, NONE = "full", "partial", "unknown", "none"
 

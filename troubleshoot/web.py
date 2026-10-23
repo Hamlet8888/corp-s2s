@@ -110,7 +110,7 @@ class Firewall:
         self.offline_logs = []
 
     def _make_client(self, host: Optional[str] = None):
-        from core.api import PanosApiClient, PanosAuthError
+        from common.api import PanosApiClient, PanosAuthError
         e, a = self.entry, self.args
         host = host or e.host
         verify = e.ca_bundle or a.ca_bundle or (False if (e.insecure or a.insecure) else True)
@@ -739,7 +739,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._json(400, {"error": "invalid JSON"})
         except Exception as exc:              # keep the server up; report the class, not a traceback
-            from core.api import PanosApiError
+            from common.api import PanosApiError
             msg = str(exc) if isinstance(exc, PanosApiError) else f"{type(exc).__name__}: {exc}"
             self._audit(f"error {msg}")
             return self._json(502 if isinstance(exc, PanosApiError) else 500, {"error": msg})

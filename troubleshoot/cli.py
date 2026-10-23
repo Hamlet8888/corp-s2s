@@ -20,7 +20,7 @@ Exit codes: 2 = blocked (or a blocking error found), 1 = warnings, 0 = clean.
 
 Live mode is read-only. The API key comes from ``PANOS_API_KEY_<HOST>`` / ``PANOS_API_KEY`` or a
 ``type=keygen`` with ``--username`` (password from ``PANOS_PASSWORD`` or a prompt), exactly as in
-:mod:`core.api`.
+:mod:`common.api`.
 """
 
 from __future__ import annotations
@@ -38,13 +38,13 @@ from typing import List, Optional
 
 warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL")
 
-from core import __version__  # noqa: E402
+from common import __version__  # noqa: E402
 
 from .engine import SEVERITIES, Diagnosis, Troubleshooter, log_summary  # noqa: E402
 from .logs import LogEntry, load_logs  # noqa: E402
 from .policy import load_policy  # noqa: E402
 
-DEMO_DIR = Path(__file__).resolve().parent.parent / "examples" / "troubleshoot"
+DEMO_DIR = Path(__file__).resolve().parent / "examples"
 
 _RESET, _BOLD, _DIM = "\033[0m", "\033[1m", "\033[2m"
 _COLORS = {"ERROR": "\033[31m", "WARNING": "\033[33m", "INFO": "\033[36m",
@@ -136,7 +136,7 @@ def _load_logs(paths: Optional[List[str]]) -> List[LogEntry]:
 
 
 def _client(args):
-    from core.api import PanosApiClient
+    from common.api import PanosApiClient
     verify = args.ca_bundle or (False if args.insecure else True)
     client = PanosApiClient(args.host, username=args.username, verify=verify, target=args.serial)
     if not client.has_key:
@@ -147,7 +147,7 @@ def _client(args):
 def _policy_only(args):
     """Load just the policy (no logs) from --config or --host."""
     if args.host:
-        from core.api import PanosApiError
+        from common.api import PanosApiError
         from .live import pull_config, pull_routes
         try:
             client = _client(args)
@@ -209,7 +209,7 @@ def cmd_diagnose(args) -> int:
     capped: List[str] = []
     logs = _load_logs(args.logs)
     if args.host:
-        from core.api import PanosApiError
+        from common.api import PanosApiError
         from .live import LiveVerifier, pull_config, pull_routes
         from .logs import fetch_logs
         try:
@@ -322,7 +322,7 @@ def cmd_inventory(args) -> int:
         entries = from_configs(args.from_configs, args.filter, site_prefix=args.site_prefix)
         note = f"generated from config exports in {args.from_configs}"
     else:
-        from core.api import PanosApiError
+        from common.api import PanosApiError
         try:
             args.host = args.panorama
             entries = from_panorama(_client(args), args.filter)

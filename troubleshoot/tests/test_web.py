@@ -192,7 +192,7 @@ class TestWebLocal(WebTestBase):
     def test_static_and_favicon(self):
         self.assertEqual(self.req("GET", "/app.js")[0].status, 200)
         self.assertEqual(self.req("GET", "/favicon.ico")[0].status, 204)
-        self.assertEqual(self.req("GET", "/../core/api.py")[0].status, 404)
+        self.assertEqual(self.req("GET", "/../common/api.py")[0].status, 404)
 
 
 class TestWebPassword(WebTestBase):

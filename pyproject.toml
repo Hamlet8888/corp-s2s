@@ -3,22 +3,23 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "corp-s2s"
+name = "paloalto-automation-tools"
 version = "0.1.0"
-description = "Audit, plan and apply PAN-OS site-to-site IPsec tunnels across a multi-site estate"
+description = "Palo Alto Networks automation and troubleshooting tools: site-to-site VPN manager and firewall troubleshooter"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = ["requests>=2.25"]
 
 [project.optional-dependencies]
-yaml = ["PyYAML>=5.4"]   # optional: core.miniyaml is used when PyYAML is absent
+yaml = ["PyYAML>=5.4"]   # optional: common.miniyaml is used when PyYAML is absent
 
 [project.scripts]
-corp-s2s = "core.cli:main"
+corp-s2s = "s2s_vpn.cli:main"
 pan-troubleshoot = "troubleshoot.cli:main"
 
 [tool.setuptools]
-packages = ["core", "troubleshoot"]
+packages = ["common", "s2s_vpn", "troubleshoot"]
 
 [tool.setuptools.package-data]
-troubleshoot = ["web/*"]
+s2s_vpn = ["examples/*"]
+troubleshoot = ["web/*", "examples/*"]

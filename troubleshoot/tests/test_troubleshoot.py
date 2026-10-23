@@ -1,4 +1,4 @@
-"""Offline tests for the troubleshoot package, on the fictional examples/troubleshoot data."""
+"""Offline tests for the troubleshoot package, on the fictional troubleshoot/examples data."""
 
 import contextlib
 import io
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core.api import PanosApiClient
+from common.api import PanosApiClient
 from troubleshoot import cli
 from troubleshoot.advisor import app_port_conflicts, audit_policy, build_matrix
 from troubleshoot.engine import Troubleshooter
@@ -19,7 +19,7 @@ from troubleshoot.policy import load_policy
 from troubleshoot.remediate import Hints
 from troubleshoot.report import render_html
 
-DEMO = Path(__file__).resolve().parent.parent / "examples" / "troubleshoot"
+DEMO = Path(__file__).resolve().parent.parent / "examples"
 CFG = DEMO / "branch-fw.xml"
 LOG_FILES = sorted(DEMO.glob("*-logs.*"))
 
@@ -322,7 +322,7 @@ class TestRemediation(unittest.TestCase):
 
 
     def test_private_destination_via_default_route_points_at_vpn(self):
-        from core.parser import IpsecTunnel, ProxyId
+        from common.parser import IpsecTunnel, ProxyId
         p = policy()
         p.ipsec_tunnels = [IpsecTunnel("VPN-SITE-B", "tunnel.9", ["GW-B"], None,
                                        [ProxyId("pid", "10.10.20.0/24", "192.168.99.0/24")], disabled=True)]
@@ -417,7 +417,7 @@ class TestLive(unittest.TestCase):
         s = mock.Mock()
         s.post.side_effect = [FakeResp(b) for b in bodies]
         c = PanosApiClient("fw.example.net", api_key="k", session=s)
-        with mock.patch("core.api.time.sleep"):
+        with mock.patch("common.api.time.sleep"):
             entries = c.query_logs("traffic", "( addr in 10.0.0.1 )")
         self.assertEqual(len(entries), 1)
         self.assertEqual(s.post.call_args_list[0].kwargs["data"]["log-type"], "traffic")

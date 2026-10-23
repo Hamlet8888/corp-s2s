@@ -2,8 +2,8 @@
 
 import unittest
 
-from core.auditor import DEMO_INVENTORY, Auditor, exit_code
-from core.parser import brace_to_xml, strip_secrets
+from s2s_vpn.auditor import DEMO_INVENTORY, Auditor, exit_code
+from common.parser import brace_to_xml, strip_secrets
 
 EXPECTED = {
     "D1 missing Phase 2 profile": ("CRYPTO_NO_IPSEC_PROFILE", "OFC-AUS-DC-EAST.Failover"),

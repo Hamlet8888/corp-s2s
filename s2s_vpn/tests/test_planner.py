@@ -4,9 +4,9 @@ import ipaddress
 import unittest
 import xml.etree.ElementTree as ET
 
-from core import miniyaml
-from core.auditor import DEMO_INVENTORY
-from core.planner import DeviceState, PlanError, TunnelPlanner, demo_states
+from common import miniyaml
+from s2s_vpn.auditor import DEMO_INVENTORY
+from s2s_vpn.planner import DeviceState, PlanError, TunnelPlanner, demo_states
 
 
 def _plan(blocked=None, inv=None):

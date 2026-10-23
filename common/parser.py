@@ -827,7 +827,7 @@ def parse_directory(directory, pattern: str = "*") -> Tuple[Dict[str, FirewallCo
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m core.parser <export> [--json]
+# CLI: python -m common.parser <export> [--json]
 # ---------------------------------------------------------------------------
 
 def _summary(fw: FirewallConfig) -> str:
