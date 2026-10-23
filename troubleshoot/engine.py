@@ -965,7 +965,7 @@ def _mark_profile_blocks(t: FlowTrace, rel: List[LogEntry]) -> None:
         return
     what = sorted({f"URL filtering ({e.category})" if e.kind == "url" else f"{e.subtype or 'threat'} '{e.threat}'"
                    for e in hits})
-    t.step("logs", "fail", f"{len(hits)} session(s) blocked by {', '.join(what)}")
+    t.step("logs", "fail", f"blocked {len(hits)} time(s) by {', '.join(what)}")   # threat/URL log entries, not sessions
     t.verdict = "PROFILE-BLOCK"
     t.reason = f"allowed by rule '{t.security_rule}', then blocked by {', '.join(what)}"
 
