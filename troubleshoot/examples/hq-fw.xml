@@ -1,0 +1,237 @@
+<?xml version="1.0"?>
+<!-- Fictional headquarters firewall for pan-troubleshoot demos and tests.
+     Public addresses are RFC 5737 documentation ranges; everything else is RFC 1918. -->
+<config version="11.1.0" urldb="paloaltonetworks" detail-version="11.1.4">
+  <devices>
+    <entry name="localhost.localdomain">
+      <deviceconfig>
+        <system><hostname>HQ-FW-01</hostname></system>
+      </deviceconfig>
+      <network>
+        <interface>
+          <ethernet>
+            <entry name="ethernet1/1"><layer3><ip><entry name="203.0.113.2/24"/></ip></layer3><comment>ISP1</comment></entry>
+            <entry name="ethernet1/2"><layer3><ip><entry name="10.10.10.1/24"/></ip></layer3><comment>Users</comment></entry>
+            <entry name="ethernet1/3"><layer3><ip><entry name="10.20.40.1/24"/></ip></layer3><comment>Servers</comment></entry>
+            <entry name="ethernet1/4"><layer3><ip><entry name="10.20.50.1/24"/></ip></layer3><comment>DMZ</comment></entry>
+            <entry name="ethernet1/5"><layer3><ip><entry name="10.20.30.1/24"/></ip></layer3><comment>IoT</comment></entry>
+            <entry name="ethernet1/6"><layer3><ip><entry name="10.20.60.1/24"/></ip></layer3><comment>Lab (zone never assigned)</comment></entry>
+            <entry name="ethernet1/7"><layer3><ip><entry name="10.20.70.1/24"/></ip></layer3><comment>Guest Wi-Fi</comment></entry>
+            <entry name="ethernet1/8"><layer3><ip><entry name="10.255.0.1/30"/></ip></layer3><comment>WAN router</comment></entry>
+          </ethernet>
+        </interface>
+        <profiles>
+          <zone-protection-profile><entry name="ZP-Internet"/></zone-protection-profile>
+        </profiles>
+        <virtual-router>
+          <entry name="default">
+            <interface>
+              <member>ethernet1/1</member><member>ethernet1/2</member><member>ethernet1/3</member>
+              <member>ethernet1/4</member><member>ethernet1/5</member><member>ethernet1/6</member>
+              <member>ethernet1/7</member><member>ethernet1/8</member>
+            </interface>
+            <routing-table>
+              <ip>
+                <static-route>
+                  <entry name="default-isp1">
+                    <destination>0.0.0.0/0</destination>
+                    <interface>ethernet1/1</interface>
+                    <nexthop><ip-address>203.0.113.1</ip-address></nexthop>
+                    <metric>10</metric>
+                  </entry>
+                  <entry name="to-other-site">
+                    <destination>10.10.0.0/16</destination>
+                    <interface>ethernet1/8</interface>
+                    <nexthop><ip-address>10.255.0.2</ip-address></nexthop>
+                    <metric>10</metric>
+                  </entry>
+                  <entry name="blackhole-rfc1918-172">
+                    <destination>172.16.0.0/12</destination>
+                    <nexthop><discard/></nexthop>
+                    <metric>250</metric>
+                  </entry>
+                </static-route>
+              </ip>
+            </routing-table>
+          </entry>
+        </virtual-router>
+      </network>
+      <vsys>
+        <entry name="vsys1">
+          <zone>
+            <entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3><zone-protection-profile>ZP-Internet</zone-protection-profile></network></entry>
+            <entry name="trust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+            <entry name="servers"><network><layer3><member>ethernet1/3</member></layer3></network></entry>
+            <entry name="dmz"><network><layer3><member>ethernet1/4</member></layer3></network></entry>
+            <entry name="iot"><network><layer3><member>ethernet1/5</member></layer3></network></entry>
+            <entry name="guest"><network><layer3><member>ethernet1/7</member></layer3></network></entry>
+            <entry name="wan"><network><layer3><member>ethernet1/8</member></layer3></network></entry>
+          </zone>
+          <address>
+            <entry name="N-Users"><ip-netmask>10.10.10.0/24</ip-netmask></entry>
+            <entry name="N-IoT"><ip-netmask>10.20.30.0/24</ip-netmask></entry>
+            <entry name="N-Servers"><ip-netmask>10.20.40.0/24</ip-netmask></entry>
+            <entry name="H-SQL01"><ip-netmask>10.20.40.10/32</ip-netmask></entry>
+            <entry name="H-Jumphost"><ip-netmask>10.20.40.22/32</ip-netmask></entry>
+            <entry name="H-Web-DMZ"><ip-netmask>10.20.50.10/32</ip-netmask></entry>
+            <entry name="H-Web-Public"><ip-netmask>203.0.113.10/32</ip-netmask></entry>
+            <entry name="H-Quarantine-PC66"><ip-netmask>10.10.10.66/32</ip-netmask></entry>
+            <entry name="FQDN-Partner-API"><fqdn>api.partner.example.net</fqdn></entry>
+          </address>
+          <address-group>
+            <entry name="AG-Quarantine"><static><member>H-Quarantine-PC66</member></static></entry>
+            <entry name="DAG-Compromised"><dynamic><filter>'compromised'</filter></dynamic></entry>
+          </address-group>
+          <service>
+            <entry name="tcp-1433"><protocol><tcp><port>1433</port></tcp></protocol></entry>
+            <entry name="tcp-8443"><protocol><tcp><port>8443</port></tcp></protocol></entry>
+            <entry name="tcp-22"><protocol><tcp><port>22</port></tcp></protocol></entry>
+          </service>
+          <profiles>
+            <url-filtering>
+              <entry name="URL-Corp">
+                <block><member>gambling</member><member>malware</member><member>phishing</member><member>command-and-control</member></block>
+                <alert><member>social-networking</member><member>streaming-media</member></alert>
+              </entry>
+            </url-filtering>
+          </profiles>
+          <profile-group>
+            <entry name="PG-Strict">
+              <virus><member>AV-Default</member></virus>
+              <spyware><member>AS-Strict</member></spyware>
+              <vulnerability><member>VP-Strict</member></vulnerability>
+              <url-filtering><member>URL-Corp</member></url-filtering>
+              <file-blocking><member>FB-Basic</member></file-blocking>
+              <wildfire-analysis><member>WF-Default</member></wildfire-analysis>
+            </entry>
+          </profile-group>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="Block-Quarantine-Old">
+                  <disabled>yes</disabled>
+                  <from><member>any</member></from><to><member>any</member></to>
+                  <source><member>AG-Quarantine</member><member>DAG-Compromised</member></source>
+                  <destination><member>any</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>any</member></service>
+                  <action>drop</action>
+                  <log-end>yes</log-end>
+                  <description>SOC ticket INC-0042: host isolated pending reimage</description>
+                </entry>
+                <entry name="Users-to-Internet">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>N-Users</member></source><destination><member>any</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>ssl</member><member>web-browsing</member><member>dns</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>PG-Strict</member></group></profile-setting>
+                </entry>
+                <entry name="Users-to-Servers-HTTPS">
+                  <from><member>trust</member></from><to><member>servers</member></to>
+                  <source><member>N-Users</member></source><destination><member>N-Servers</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>service-https</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="Admins-to-Jumphost">
+                  <from><member>trust</member></from><to><member>servers</member></to>
+                  <source><member>N-Users</member></source><destination><member>H-Jumphost</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>web-browsing</member></application>
+                  <service><member>tcp-22</member></service>
+                  <action>allow</action>
+                  <description>CHG-1187: admin SSH to the jump host</description>
+                </entry>
+                <entry name="IoT-to-Cloud">
+                  <from><member>iot</member></from><to><member>untrust</member></to>
+                  <source><member>N-IoT</member></source><destination><member>any</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>ssl</member><member>ntp</member></application>
+                  <service><member>any</member></service>
+                  <action>allow</action>
+                  <log-end>no</log-end>
+                </entry>
+                <entry name="IoT-to-SQL">
+                  <from><member>iot</member></from><to><member>servers</member></to>
+                  <source><member>N-IoT</member></source><destination><member>H-SQL01</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>tcp-1433</member></service>
+                  <action>allow</action>
+                  <disabled>yes</disabled>
+                </entry>
+                <entry name="IoT-to-Servers-NTP">
+                  <from><member>iot</member></from><to><member>servers</member></to>
+                  <source><member>N-IoT</member></source><destination><member>N-Servers</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>ntp</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="Inbound-Web-DMZ">
+                  <from><member>untrust</member></from><to><member>dmz</member></to>
+                  <source><member>any</member></source><destination><member>H-Web-Public</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>ssl</member><member>web-browsing</member></application>
+                  <service><member>service-https</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>PG-Strict</member></group></profile-setting>
+                </entry>
+                <entry name="Users-to-Partner-API">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>N-Users</member></source><destination><member>FQDN-Partner-API</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>tcp-8443</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="Users-to-Other-Site">
+                  <from><member>trust</member></from><to><member>wan</member></to>
+                  <source><member>N-Users</member></source><destination><member>10.0.0.0/8</member></destination>
+                  <source-user><member>any</member></source-user>
+                  <application><member>any</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>PG-Strict</member></group></profile-setting>
+                </entry>
+              </rules>
+            </security>
+            <decryption>
+              <rules>
+                <entry name="Decrypt-Users-Outbound">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>N-Users</member></source><destination><member>any</member></destination>
+                  <category><member>any</member></category>
+                  <action>decrypt</action>
+                  <type><ssl-forward-proxy/></type>
+                </entry>
+              </rules>
+            </decryption>
+            <nat>
+              <rules>
+                <entry name="DNAT-Web-DMZ">
+                  <from><member>untrust</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>H-Web-Public</member></destination>
+                  <service>service-https</service>
+                  <destination-translation><translated-address>H-Web-DMZ</translated-address></destination-translation>
+                </entry>
+                <entry name="SNAT-Outbound">
+                  <from><member>trust</member><member>iot</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <service>any</service>
+                  <source-translation>
+                    <dynamic-ip-and-port><interface-address><interface>ethernet1/1</interface></interface-address></dynamic-ip-and-port>
+                  </source-translation>
+                </entry>
+              </rules>
+            </nat>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>

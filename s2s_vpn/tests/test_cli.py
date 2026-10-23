@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest import mock
 
-from core import cli
+from s2s_vpn import cli
 
 
 def run(*argv):
@@ -46,21 +46,21 @@ class TestCli(unittest.TestCase):
         self.assertIn("refusing --execute with --demo", str(rc) + err)
 
     def test_execute_requires_explicit_device(self):
-        with mock.patch("core.cli.load_context") as lc:
-            from core import miniyaml
-            from core.auditor import DEMO_INVENTORY
-            from core.planner import demo_states
+        with mock.patch("s2s_vpn.cli.load_context") as lc:
+            from common import miniyaml
+            from s2s_vpn.auditor import DEMO_INVENTORY
+            from s2s_vpn.planner import demo_states
             inv = miniyaml.load(DEMO_INVENTORY)
             lc.return_value = {"inventory": inv, "states": demo_states(inv), "auditor": None, "source": "x"}
             rc, _, _ = run("apply", "--inventory", "inv.yaml", "--execute")
         self.assertIn("requires at least one explicit --device", str(rc))
 
     def test_execute_aborts_when_confirmation_mismatches(self):
-        with mock.patch("core.cli.load_context") as lc, mock.patch("builtins.input", return_value="wrong"), \
+        with mock.patch("s2s_vpn.cli.load_context") as lc, mock.patch("builtins.input", return_value="wrong"), \
                 mock.patch("requests.Session.post", side_effect=AssertionError("network used")):
-            from core import miniyaml
-            from core.auditor import DEMO_INVENTORY
-            from core.planner import demo_states
+            from common import miniyaml
+            from s2s_vpn.auditor import DEMO_INVENTORY
+            from s2s_vpn.planner import demo_states
             inv = miniyaml.load(DEMO_INVENTORY)
             lc.return_value = {"inventory": inv, "states": demo_states(inv), "auditor": None, "source": "x"}
             rc, _, err = run("apply", "--inventory", "inv.yaml", "--device", "OFC-BER-FW-01", "--execute",

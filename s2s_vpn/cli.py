@@ -10,7 +10,7 @@ corp-s2s CLI orchestrator: audit, plan and apply PAN-OS site-to-site VPN tunnels
     corp-s2s plan  --inventory inventory/sites.yaml --exports DIR
     corp-s2s apply --inventory inventory/sites.yaml --exports DIR --device HOST [--device HOST] --execute
 
-(``python3 vpn_manager.py ...`` and ``python3 -m core.cli ...`` are equivalent.)
+(``python3 vpn_manager.py ...`` and ``python3 -m s2s_vpn.cli ...`` are equivalent.)
 
 ``apply`` without ``--execute`` is a dry run: it shows exactly which API calls
 would be made, with secrets redacted, and contacts nothing. ``--execute``
@@ -49,10 +49,10 @@ from typing import Dict, List, Optional
 # macOS system Python links LibreSSL; urllib3 warns about it on import. It is harmless for us.
 warnings.filterwarnings("ignore", message=r"urllib3 v2 only supports OpenSSL")
 
-from . import __version__, miniyaml  # noqa: E402
-from .api import PanosApiClient, PanosApiError  # noqa: E402
+from common import __version__, miniyaml  # noqa: E402
+from common.api import PanosApiClient, PanosApiError  # noqa: E402
 from .auditor import DEMO_INVENTORY, Auditor, exit_code, format_report  # noqa: E402
-from .parser import parse_directory, parse_firewall  # noqa: E402
+from common.parser import parse_directory, parse_firewall  # noqa: E402
 from .planner import (PSK_PLACEHOLDER, DeviceState, PlanAction, TunnelPlanner, demo_states,  # noqa: E402
                       format_plan, plan_to_json)
 
@@ -325,7 +325,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     def common(p, needs_inventory: bool):
         g = p.add_mutually_exclusive_group(required=True)
-        g.add_argument("--demo", action="store_true", help="use the fictional examples/mock_inventory.yaml")
+        g.add_argument("--demo", action="store_true", help="use the fictional s2s_vpn/examples/mock_inventory.yaml")
         if needs_inventory:
             g.add_argument("--inventory", metavar="YAML", help="real inventory (kept in git-ignored inventory/)")
         else:

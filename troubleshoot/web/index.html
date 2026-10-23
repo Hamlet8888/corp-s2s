@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="pt-token" content="__PT_TOKEN__">
+  <title>Firewall Check</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm0 2.2 6 2.3V11c0 4-2.6 7.8-6 8.9C8.6 18.8 6 15 6 11V6.5l6-2.3Z"/></svg>
+    </div>
+    <div>
+      <div class="title">Firewall Check</div>
+      <div class="subtitle">Is the firewall blocking it, and why?</div>
+    </div>
+  </div>
+  <div class="fw">
+    <label for="fw-select" class="fw-label">Firewall</label>
+    <select id="fw-select" aria-label="Firewall to check"></select>
+    <span id="fw-dot" class="dot"></span>
+    <span id="fw-name"></span>
+    <button id="refresh" class="btn ghost small" type="button" title="Reload this firewall's configuration">Refresh</button>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="side" aria-label="Sections">
+    <div class="nav-group">Helpdesk</div>
+    <button class="nav active" data-view="check" type="button">Check a connection</button>
+    <div class="nav-group">Engineer tools</div>
+    <button class="nav" data-view="logs" type="button">Recent logs</button>
+    <button class="nav" data-view="matrix" type="button">Allowed apps &amp; ports</button>
+    <button class="nav" data-view="rules" type="button">Rules, NAT &amp; routes</button>
+    <button class="nav" data-view="profiles" type="button">Security profiles</button>
+    <button class="nav" data-view="audit" type="button">Best-practice audit</button>
+    <button class="nav" data-view="ha" type="button">HA health (all firewalls)</button>
+    <div class="side-foot">Read-only: this tool never changes the firewall.</div>
+  </nav>
+
+  <main id="main">
+    <div id="fw-banner" class="banner" hidden></div>
+    <!-- Check a connection -->
+    <section class="view" id="view-check">
+      <form class="card" id="check-form" autocomplete="off">
+        <h1>What isn't working?</h1>
+        <div class="grid2">
+          <label class="field">
+            <span>Device <em>required</em></span>
+            <input name="device" required placeholder="e.g. 192.168.10.63 or LAPTOP-123">
+            <small>The user's computer or phone (IP address or name).</small>
+            <div id="locate-hint" class="hint" hidden></div>
+          </label>
+          <label class="field">
+            <span>Trying to reach</span>
+            <input name="destination" placeholder="e.g. github.com, a link, or an IP">
+            <small>Leave empty to look for anything blocked for this device.</small>
+          </label>
+        </div>
+        <div class="grid3">
+          <label class="field">
+            <span>Port</span>
+            <input name="port" inputmode="numeric" placeholder="automatic">
+          </label>
+          <label class="field">
+            <span>When did it happen?</span>
+            <select name="minutes">
+              <option value="15">Last 15 minutes</option>
+              <option value="60" selected>Last hour</option>
+              <option value="240">Last 4 hours</option>
+              <option value="1440">Last 24 hours</option>
+              <option value="">Any time</option>
+            </select>
+          </label>
+          <div class="field actions">
+            <button class="btn primary big" type="submit" id="check-btn">Check</button>
+          </div>
+        </div>
+        <details class="more">
+          <summary>More options (for engineers)</summary>
+          <div class="grid3">
+            <label class="field"><span>Application (App-ID)</span><input name="app" list="apps" placeholder="e.g. ssl, ssh, ms-rdp"></label>
+            <label class="field"><span>User</span><input name="user" placeholder="domain\user"></label>
+            <label class="field"><span>URL category</span><input name="url_category" list="cats" placeholder="e.g. gambling"></label>
+            <label class="field"><span>Protocol</span>
+              <select name="protocol"><option value="">automatic</option><option>tcp</option><option>udp</option><option>icmp</option></select></label>
+            <label class="field"><span>Direction</span>
+              <select name="direction"><option value="out">Device → destination</option><option value="in">Destination → device</option></select></label>
+            <label class="field"><span>From zone</span><select name="from_zone" class="zones"><option value="">automatic</option></select></label>
+            <label class="field"><span>To zone</span><select name="to_zone" class="zones"><option value="">automatic</option></select></label>
+            <label class="field"><span>Next hop (for a missing route)</span><input name="next_hop" placeholder="IP"></label>
+            <label class="field"><span>Publish to server (DNAT)</span><input name="dnat_to" placeholder="internal IP"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="verify" checked> Double-check with the firewall's own policy lookup (live mode)</label>
+        </details>
+      </form>
+      <div id="check-busy" class="busy" hidden><span class="spinner"></span> Checking the firewall… this can take up to 30 seconds.</div>
+      <div id="check-error" class="error" hidden></div>
+      <div id="check-result"></div>
+    </section>
+
+    <!-- Logs -->
+    <section class="view" id="view-logs" hidden>
+      <form class="card" id="logs-form" autocomplete="off">
+        <h1>Recent logs</h1>
+        <div class="grid4">
+          <label class="field"><span>Device <em>required</em></span><input name="device" required placeholder="IP or name"></label>
+          <label class="field"><span>Destination</span><input name="destination" placeholder="optional"></label>
+          <label class="field"><span>Show</span>
+            <select name="kind"><option value="blocked">Blocked only</option><option value="all">Everything</option>
+              <option value="traffic">Traffic</option><option value="threat">Threats</option><option value="url">Web (URL)</option></select></label>
+          <label class="field"><span>When</span>
+            <select name="minutes"><option value="15">Last 15 minutes</option><option value="60" selected>Last hour</option>
+              <option value="240">Last 4 hours</option><option value="1440">Last 24 hours</option></select></label>
+        </div>
+        <button class="btn primary" type="submit">Show logs</button>
+      </form>
+      <div id="logs-result"></div>
+    </section>
+
+    <!-- Matrix -->
+    <section class="view" id="view-matrix" hidden>
+      <form class="card" id="matrix-form" autocomplete="off">
+        <h1>Allowed apps &amp; ports</h1>
+        <p class="muted">Every application and port the rules allow or block between two addresses.</p>
+        <div class="grid3">
+          <label class="field"><span>From</span><input name="source" required placeholder="IP or name"></label>
+          <label class="field"><span>To</span><input name="destination" required placeholder="IP, subnet or website"></label>
+          <label class="check inline"><input type="checkbox" name="one_way"> One direction only</label>
+        </div>
+        <button class="btn primary" type="submit">Show</button>
+      </form>
+      <div id="matrix-result"></div>
+    </section>
+
+    <section class="view" id="view-rules" hidden><div id="rules-result"></div></section>
+    <section class="view" id="view-profiles" hidden><div id="profiles-result"></div></section>
+    <section class="view" id="view-audit" hidden><div id="audit-result"></div></section>
+    <section class="view" id="view-ha" hidden><div id="ha-result"></div></section>
+  </main>
+</div>
+
+<datalist id="apps"><option>ssl</option><option>web-browsing</option><option>dns</option><option>ssh</option>
+  <option>ms-rdp</option><option>ms-ds-smb</option><option>ntp</option><option>smtp</option><option>quic</option></datalist>
+<datalist id="cats"><option>malware</option><option>phishing</option><option>gambling</option><option>adult</option>
+  <option>news</option><option>social-networking</option><option>streaming-media</option><option>high-risk</option></datalist>
+<script src="app.js"></script>
+</body>
+</html>

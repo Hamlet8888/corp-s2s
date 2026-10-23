@@ -6,9 +6,9 @@ which can be built two ways:
 
 * :meth:`Auditor.from_inventory`: from an inventory YAML that includes an
   ``observed:`` section. This is how ``--demo`` runs against
-  ``examples/mock_inventory.yaml``.
+  ``s2s_vpn/examples/mock_inventory.yaml``.
 * :meth:`Auditor.from_exports`: from real firewall exports (XML or brace
-  format) parsed by :mod:`core.parser`, optionally with a Panorama export for
+  format) parsed by :mod:`common.parser`, optionally with a Panorama export for
   the crypto standards and an inventory for site metadata.
 
 Checks:
@@ -33,7 +33,7 @@ broken, or apply would be unsafe), ``DRIFT`` (deviates from the standard but
 may work), ``WARNING`` (risky or ambiguous) and ``INFO``.
 
 Standard library only (Python 3.9+). The inventory is read with
-:mod:`core.miniyaml`, which uses PyYAML when it is installed.
+:mod:`common.miniyaml`, which uses PyYAML when it is installed.
 """
 
 from __future__ import annotations
@@ -49,14 +49,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
-from . import miniyaml
-from .parser import (DEFAULT_IKE, DEFAULT_IPSEC, FirewallConfig, IkeCryptoProfile,
+from common import miniyaml
+from common.parser import (DEFAULT_IKE, DEFAULT_IPSEC, FirewallConfig, IkeCryptoProfile,
                      IpsecCryptoProfile, PanoramaConfig, parse_directory, parse_panorama)
 
 SEVERITIES: Tuple[str, ...] = ("ERROR", "DRIFT", "WARNING", "INFO")
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 
-DEMO_INVENTORY = Path(__file__).resolve().parent.parent / "examples" / "mock_inventory.yaml"
+DEMO_INVENTORY = Path(__file__).resolve().parent / "examples" / "mock_inventory.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -811,7 +811,7 @@ def exit_code(findings: List[Finding]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m core.auditor --demo | --inventory FILE | --exports DIR
+# CLI: python -m s2s_vpn.auditor --demo | --inventory FILE | --exports DIR
 # ---------------------------------------------------------------------------
 
 def main(argv: Optional[List[str]] = None) -> int:

@@ -1,0 +1,24 @@
+# Demo inventory for `pan-troubleshoot serve --demo` (fictional firewalls, offline configs).
+# A real inventory lists management IPs instead of config files and lives in the git-ignored inventory/ folder:
+#   - name: BLR-FW-01
+#     host: 10.9.10.2
+#     site: Bangalore, India
+firewalls:
+  - name: BRANCH-FW-01
+    site: Branch office (demo)
+    group: Demo sites
+    config: branch-fw.xml
+    logs: [traffic-logs.xml, threat-logs.xml, url-logs.csv]
+    networks: [10.10.0.0/16]
+  - name: HQ-FW-01
+    site: Headquarters (demo)
+    group: Demo sites
+    config: hq-fw.xml
+    networks: [10.20.0.0/16]
+    east_west: Cisco Nexus             # inside HQ, servers and users are switched by the Nexus core
+    firewalled_networks: [10.20.50.0/24]   # except the DMZ, which sits behind the firewall
+  - name: LAB-TEST-FIREWALL
+    site: Lab
+    config: branch-fw.xml
+    lab: true
+    note: Test firewall, not for helpdesk checks

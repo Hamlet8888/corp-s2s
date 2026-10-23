@@ -147,8 +147,23 @@ _LIST_PATHS_DEVICE: frozenset = frozenset({
     "/vsys/*/address-group",
     "/vsys/*/rulebase/security/rules",
     "/vsys/*/rulebase/nat/rules",
+    "/vsys/*/rulebase/default-security-rules/rules",
+    "/vsys/*/rulebase/decryption/rules",
+    "/vsys/*/service",
+    "/vsys/*/service-group",
+    "/vsys/*/application-group",
+    "/vsys/*/external-list",
+    "/vsys/*/region",
+    "/vsys/*/profile-group",
+    "/vsys/*/profiles/url-filtering",
+    "/vsys/*/profiles/custom-url-category",
+    "/network/profiles/zone-protection-profile",
 })
-_LIST_PATHS_TOP: frozenset = frozenset({"/devices", "/shared/address", "/shared/address-group"})
+_LIST_PATHS_TOP: frozenset = frozenset({
+    "/devices", "/shared/address", "/shared/address-group", "/shared/service", "/shared/service-group",
+    "/shared/application-group", "/shared/external-list", "/shared/region", "/shared/profile-group",
+    "/shared/profiles/url-filtering", "/shared/profiles/custom-url-category",
+})
 
 _VALID_TAG = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 _TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[{};\[\]]|[^\s{};\[\]"]+')
@@ -812,7 +827,7 @@ def parse_directory(directory, pattern: str = "*") -> Tuple[Dict[str, FirewallCo
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m core.parser <export> [--json]
+# CLI: python -m common.parser <export> [--json]
 # ---------------------------------------------------------------------------
 
 def _summary(fw: FirewallConfig) -> str:

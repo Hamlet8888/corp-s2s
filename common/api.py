@@ -253,6 +253,9 @@ class PanosApiClient:
         self._key: Optional[str] = None
         if verify is False:
             log.warning("%s: TLS certificate verification is DISABLED", host)
+            # already warned once above; don't let urllib3 repeat it on every request
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         key = api_key or (secret_provider(host) if secret_provider else None) \
             or os.environ.get(_env_key_name(host)) or os.environ.get("PANOS_API_KEY")
         if key:
@@ -278,7 +281,8 @@ class PanosApiClient:
         """
         user = username or self._username or os.environ.get("PANOS_USERNAME")
         if not user:
-            raise PanosAuthError("no username for keygen (pass username= or set PANOS_USERNAME)", host=self.host)
+            raise PanosAuthError("no API key and no username: set PANOS_API_KEY_<HOST> / PANOS_API_KEY, "
+                                 "pass --username (CLI) / username=, or set PANOS_USERNAME", host=self.host)
         pw = password or os.environ.get("PANOS_PASSWORD") or getpass.getpass(f"Password for {user}@{self.host}: ")
         _REDACTOR.add_secret(pw)
         root = self._request({"type": "keygen", "user": user, "password": pw}, auth=False, read=True)
@@ -330,7 +334,9 @@ class PanosApiClient:
 
     def _handle(self, resp: requests.Response, raw: bool) -> Union[ET.Element, bytes]:
         if resp.status_code in (401, 403):
-            raise PanosAuthError(f"{self.host}: authentication failed (HTTP {resp.status_code})",
+            raise PanosAuthError(f"{self.host}: authentication failed (HTTP {resp.status_code}): wrong user/password "
+                                 f"or key, or the admin role has no XML API access (see Monitor > Logs > System, "
+                                 f"subtype auth)",
                                  code=str(resp.status_code), host=self.host)
         if resp.status_code >= 400:
             raise PanosResponseError(f"{self.host}: HTTP {resp.status_code}", code=str(resp.status_code),
@@ -427,6 +433,37 @@ class PanosApiClient:
             fh.write(body)
         log.info("%s: backup written to %s (%d bytes)", self.host, path, len(body))
         return path
+
+    # -- logs (read-only) -------------------------------------------------------
+    def query_logs(self, log_type: str, query: str = "", nlogs: int = 500,
+                   timeout: float = 120, poll: float = 2) -> List[ET.Element]:
+        """Run an asynchronous log query (``type=log``) and return the ``<entry>`` elements.
+
+        *log_type* is ``traffic``, ``threat``, ``url``, ``wildfire``, ``data``, ...
+        *query* uses the Monitor-tab filter syntax, e.g. ``( addr in 10.1.1.0/24 )``.
+        """
+        if not re.match(r"^[a-z\-]+$", log_type):
+            raise PanosSafetyError(f"invalid log type: {log_type!r}")
+        params = {"type": "log", "log-type": log_type, "nlogs": str(max(1, min(int(nlogs), 5000)))}
+        if query:
+            params["query"] = query
+        root = self._request(params)
+        job_id = (root.findtext("result/job") or "").strip()
+        if not job_id:
+            raise PanosResponseError(f"{self.host}: log query returned no job id", host=self.host)
+        deadline = time.monotonic() + timeout
+        while True:
+            res = self._request({"type": "log", "action": "get", "job-id": job_id})
+            if (res.findtext("result/job/status") or "").strip() == "FIN":
+                return res.findall("result/log/logs/entry")
+            if time.monotonic() >= deadline:
+                try:
+                    self._request({"type": "log", "action": "finish", "job-id": job_id})
+                except PanosApiError:
+                    pass
+                raise PanosTimeoutError(f"{self.host}: {log_type} log query {job_id} did not finish "
+                                        f"within {timeout}s", host=self.host)
+            time.sleep(poll)
 
     # -- VPN verification (read-only) -------------------------------------------
     def ike_sa(self, gateway: str) -> ET.Element:
@@ -607,7 +644,7 @@ def _check_xpath(xpath: str) -> str:
 
 
 def entry_xpath(*parts) -> str:
-    """Build a validated xpath; see :func:`core.xpath.entry_xpath`."""
+    """Build a validated xpath; see :func:`common.xpath.entry_xpath`."""
     try:
         return _entry_xpath(*parts)
     except XpathError as exc:

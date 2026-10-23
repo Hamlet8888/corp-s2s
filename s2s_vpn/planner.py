@@ -26,7 +26,7 @@ describe are listed as *unmanaged* for a human to decide on.
 Pre-shared keys are never known to the planner. Gateway elements carry a
 placeholder (``__PSK:<link-id>__``) that ``apply`` replaces at push time
 with a key from the environment or Secret Server. Rendered plans pass through
-:func:`core.parser.strip_secrets`, so even the placeholder prints as ``<redacted>``.
+:func:`common.parser.strip_secrets`, so even the placeholder prints as ``<redacted>``.
 
 Standard library only. Python 3.9+.
 """
@@ -44,13 +44,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from . import miniyaml
-from .parser import FirewallConfig, parse_directory, strip_secrets
-from .xpath import FW_NETWORK, child, fw_vsys
+from common import miniyaml
+from common.parser import FirewallConfig, parse_directory, strip_secrets
+from common.xpath import FW_NETWORK, child, fw_vsys
 
 logger = logging.getLogger("corp_s2s.planner")
 
-DEMO_INVENTORY = Path(__file__).resolve().parent.parent / "examples" / "mock_inventory.yaml"
+DEMO_INVENTORY = Path(__file__).resolve().parent / "examples" / "mock_inventory.yaml"
 PAN_NAME_MAX = 63           # PAN-OS object name limit for gateways/tunnels/routes (10.x+)
 PSK_PLACEHOLDER = "__PSK:{link_id}__"
 
@@ -75,7 +75,7 @@ class PlanAction:
     changes: List[str] = field(default_factory=list)
 
     def as_tuple(self) -> Tuple[str, str, str]:
-        """Return ``(api_action, xpath, element)``, the shape :class:`core.api.PanosApiClient` consumes."""
+        """Return ``(api_action, xpath, element)``, the shape :class:`common.api.PanosApiClient` consumes."""
         return self.api_action, self.xpath, self.element
 
     def redacted_element(self) -> str:
@@ -629,7 +629,7 @@ def plan_to_json(planner: TunnelPlanner) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m core.planner --demo [--xml] [--json]
+# CLI: python -m s2s_vpn.planner --demo [--xml] [--json]
 # ---------------------------------------------------------------------------
 
 def demo_states(inv: Dict[str, Any]) -> Dict[str, DeviceState]:
