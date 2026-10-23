@@ -1,8 +1,8 @@
 # Demo inventory for `pan-troubleshoot serve --demo` (fictional firewalls, offline configs).
 # A real inventory lists management IPs instead of config files and lives in the git-ignored inventory/ folder:
-#   - name: BLR-FW-01
-#     host: 10.9.10.2
-#     site: Bangalore, India
+#   - name: EAST-FW-01
+#     host: 10.50.10.2
+#     site: East office
 firewalls:
   - name: BRANCH-FW-01
     site: Branch office (demo)
